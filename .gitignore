@@ -1,8 +1,10 @@
+.env
 __pycache__/
 *.pyc
-.env
-.venv/
+*.pyo
 venv/
-env/
-.env.local
-*.log
+.venv/
+*.pkl
+.pytest_cache/
+.alembic_history
+

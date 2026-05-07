@@ -6,19 +6,24 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import httpx
 
-from routers import events, audit
+from database_async import create_pool, close_pool
+from routers import events, audit, auth
 
 
 # ── Rate limiter ───────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/day"])
 
 
-# ── Lifespan: shared httpx client ─────────────────────────
+# ── Lifespan: httpx client + asyncpg pool ─────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Startup
     app.state.http = httpx.AsyncClient(timeout=10.0)
+    await create_pool()
     yield
+    # Shutdown
     await app.state.http.aclose()
+    await close_pool()
 
 
 # ── App factory ────────────────────────────────────────────
@@ -26,13 +31,15 @@ app = FastAPI(
     title       = "Activity Tracker API",
     description = """
 A user activity tracking API with:
+- **JWT Auth** — register, login, protected routes
 - **JSONB** flexible event payloads (PostgreSQL)
 - **CDC** automatic audit trail via triggers
-- **SlowAPI** rate limiting on all endpoints
+- **SlowAPI** per-user rate limiting
 - **httpx** async enrichment via external API
 - **Gemini AI** natural language search + event summarisation
+- **pgvector** semantic search via cosine similarity
     """,
-    version  = "1.0.0",
+    version  = "3.0.0",
     lifespan = lifespan
 )
 
@@ -54,18 +61,16 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
 
 
 # ── Routers ────────────────────────────────────────────────
+app.include_router(auth.router)
 app.include_router(events.router)
 app.include_router(audit.router)
 
 
-# ── Health check (rate limit exempt) ──────────────────────
+# ── Health check ──────────────────────────────────────────
 @app.get("/health", tags=["Health"])
 @limiter.exempt
 async def health(request: Request):
-    return {
-        "status":  "healthy",
-        "version": "1.0.0"
-    }
+    return {"status": "healthy", "version": "3.0.0"}
 
 
 # ── Root ───────────────────────────────────────────────────

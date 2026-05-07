@@ -7,16 +7,20 @@ load_dotenv()
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
 
-model = genai.GenerativeModel("gemini-1.5-flash")
+# ── Models ─────────────────────────────────────────────────
+model           = genai.GenerativeModel("gemini-2.5-flash")
+EMBEDDING_MODEL = "models/gemini-embedding-001"
+EMBEDDING_DIM   = 3072
 
 
-# ── Schema context given to Gemini so it understands our DB ──
+# ── Schema context for NL search ───────────────────────────
 DB_SCHEMA = """
 You are a PostgreSQL expert. You have access to these two tables:
 
 TABLE: events
   id          SERIAL PRIMARY KEY
   user_id     INTEGER
+  owner_id    INTEGER  -- FK to users.id
   event_type  TEXT        -- values: login, logout, purchase, page_view
   payload     JSONB       -- flexible JSON, examples below
   created_at  TIMESTAMPTZ
@@ -39,7 +43,7 @@ Useful JSONB operators:
   payload @> '{"k":"v"}'  -- contains check
   payload ? 'key'          -- key exists
 
-IMPORTANT rules for generating SQL:
+IMPORTANT rules:
   - Always return SELECT queries only. Never INSERT/UPDATE/DELETE.
   - Use LIMIT 50 unless user specifies otherwise.
   - Use payload->>'field' for JSONB field comparisons.
@@ -47,10 +51,35 @@ IMPORTANT rules for generating SQL:
 """
 
 
+# ── Embedding helper ───────────────────────────────────────
+async def embed_text(text: str) -> list[float]:
+    """
+    Convert text to a 3072-dimension vector using Gemini Embeddings.
+    Used for both storing event embeddings and querying semantic search.
+    """
+    result = genai.embed_content(
+        model=EMBEDDING_MODEL,
+        content=text,
+        task_type="retrieval_document"
+    )
+    return result["embedding"]
+
+
+def event_to_text(event_type: str, payload: dict) -> str:
+    """
+    Convert an event into a plain text string for embedding.
+    Richer text = better semantic search results.
+    """
+    parts = [f"event type: {event_type}"]
+    for key, value in payload.items():
+        if key not in ("enriched", "enrichment_source", "enrichment_error"):
+            parts.append(f"{key}: {value}")
+    return ", ".join(parts)
+
+
+# ── NL to SQL ──────────────────────────────────────────────
 async def natural_language_to_sql(question: str) -> str:
-    """
-    Uses Gemini to convert a plain English question into a PostgreSQL query.
-    """
+    """Convert a plain English question into a PostgreSQL SELECT query via Gemini."""
     prompt = f"""{DB_SCHEMA}
 
 Convert this question into a valid PostgreSQL SELECT query:
@@ -58,13 +87,10 @@ Convert this question into a valid PostgreSQL SELECT query:
 
 Return only the raw SQL. No explanation. No markdown. No backticks."""
 
-    response = model.generate_content(prompt)
-    sql = response.text.strip()
+    response  = model.generate_content(prompt)
+    sql       = response.text.strip()
+    sql       = sql.replace("```sql", "").replace("```", "").strip()
 
-    # Safety: strip any accidental markdown fences
-    sql = sql.replace("```sql", "").replace("```", "").strip()
-
-    # Safety: block any non-SELECT queries
     first_word = sql.split()[0].upper() if sql.split() else ""
     if first_word != "SELECT":
         raise ValueError(f"Gemini returned a non-SELECT query: {first_word}")
@@ -72,10 +98,9 @@ Return only the raw SQL. No explanation. No markdown. No backticks."""
     return sql
 
 
+# ── Event summarisation ────────────────────────────────────
 async def summarise_events(events: list[dict]) -> str:
-    """
-    Uses Gemini to produce a plain-English summary of a list of events.
-    """
+    """Use Gemini to produce a plain-English summary of a list of events."""
     if not events:
         return "No events found to summarise."
 
@@ -90,7 +115,7 @@ Write a concise plain-English summary (3-5 sentences) covering:
 - What types of activities happened
 - Any notable patterns (repeated logins, failed attempts, purchases)
 - Countries or devices involved
-- Anything that looks suspicious or worth flagging
+- Anything suspicious or worth flagging
 
 Be direct and specific. Use numbers where possible."""
 
