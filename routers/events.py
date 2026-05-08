@@ -12,7 +12,8 @@ from schemas import (
     EventCreate, EventUpdate, EventResponse,
     NLSearchRequest, NLSearchResponse,
     SummaryRequest, SummaryResponse,
-    SemanticSearchRequest, SemanticSearchResponse, SemanticSearchResult
+    SemanticSearchRequest, SemanticSearchResponse, SemanticSearchResult,
+    AnomalyTrainResponse, AnomalyScanResponse
 )
 from services.enrichment import enrich_event
 from services.ai_service import (
@@ -20,6 +21,7 @@ from services.ai_service import (
     embed_text, event_to_text
 )
 from services.auth_service import get_current_user, get_user_id_for_limit
+from services.anomaly_service import train_model, score_event, score_all_events
 
 router  = APIRouter(prefix="/events", tags=["Events"])
 limiter = Limiter(key_func=get_user_id_for_limit)
@@ -34,20 +36,26 @@ async def create_event(
     db:           Session = Depends(get_db),
     current_user: User    = Depends(get_current_user)
 ):
-    """Log a new activity event. Payload enriched via httpx. Embedding generated for semantic search."""
+    """Log a new activity event. Enriched via httpx. Embedded for semantic search. Auto-scored for anomalies."""
     async with httpx.AsyncClient() as client:
         enriched_payload = await enrich_event(client, body.payload)
 
-    # Generate embedding for semantic search
+    # Generate embedding
     event_text = event_to_text(body.event_type, enriched_payload)
     embedding  = await embed_text(event_text)
 
+    # Auto-score anomaly using saved model (graceful if not trained yet)
+    event_dict = {"event_type": body.event_type, "payload": enriched_payload}
+    anomaly_score, is_anomaly = score_event(event_dict)
+
     event = Event(
-        user_id    = body.user_id,
-        owner_id   = current_user.id,
-        event_type = body.event_type,
-        payload    = enriched_payload,
-        embedding  = embedding
+        user_id       = body.user_id,
+        owner_id      = current_user.id,
+        event_type    = body.event_type,
+        payload       = enriched_payload,
+        embedding     = embedding,
+        anomaly_score = anomaly_score,
+        is_anomaly    = is_anomaly
     )
     db.add(event)
     db.commit()
@@ -63,11 +71,12 @@ async def list_events(
     user_id:      int  | None = None,
     event_type:   str  | None = None,
     country:      str  | None = None,
+    is_anomaly:   bool | None = None,
     limit:        int         = 20,
     db:           Session     = Depends(get_db),
     current_user: User        = Depends(get_current_user)
 ):
-    """List your events with optional filters."""
+    """List your events. Filter by user_id, event_type, country, or is_anomaly."""
     query = db.query(Event).filter(Event.owner_id == current_user.id)
 
     if user_id:
@@ -76,6 +85,8 @@ async def list_events(
         query = query.filter(Event.event_type == event_type)
     if country:
         query = query.filter(Event.payload["country"].astext == country)
+    if is_anomaly is not None:
+        query = query.filter(Event.is_anomaly == is_anomaly)
 
     return query.order_by(Event.created_at.desc()).limit(limit).all()
 
@@ -108,7 +119,7 @@ async def update_event(
     db:           Session = Depends(get_db),
     current_user: User    = Depends(get_current_user)
 ):
-    """Update your event. CDC trigger logs the change."""
+    """Update event. CDC logs change. Embedding + anomaly score regenerated."""
     event = db.query(Event).filter(
         Event.id       == event_id,
         Event.owner_id == current_user.id
@@ -121,9 +132,15 @@ async def update_event(
     if body.payload is not None:
         event.payload = {**event.payload, **body.payload}
 
-    # Regenerate embedding on update
-    event_text     = event_to_text(event.event_type, event.payload)
+    # Regenerate embedding
+    event_text      = event_to_text(event.event_type, event.payload)
     event.embedding = await embed_text(event_text)
+
+    # Re-score anomaly
+    event_dict            = {"event_type": event.event_type, "payload": event.payload}
+    anomaly_score, is_anomaly = score_event(event_dict)
+    event.anomaly_score   = anomaly_score
+    event.is_anomaly      = is_anomaly
 
     db.commit()
     db.refresh(event)
@@ -139,7 +156,6 @@ async def delete_event(
     db:           Session = Depends(get_db),
     current_user: User    = Depends(get_current_user)
 ):
-    """Delete your event. CDC trigger logs the deletion."""
     event = db.query(Event).filter(
         Event.id       == event_id,
         Event.owner_id == current_user.id
@@ -159,7 +175,7 @@ async def nl_search(
     db:           Session = Depends(get_db),
     current_user: User    = Depends(get_current_user)
 ):
-    """Natural language search powered by Gemini — converts question to SQL."""
+    """Natural language search — Gemini converts question to SQL."""
     try:
         sql = await natural_language_to_sql(body.question)
     except ValueError as e:
@@ -227,42 +243,26 @@ async def semantic_search(
     conn          = Depends(get_async_conn),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Semantic search using pgvector cosine similarity.
-    Finds events similar in MEANING to your query,
-    even if the exact words don't match.
-    e.g. 'user had trouble logging in' finds events with status:failed
-    """
+    """Semantic search using pgvector cosine similarity."""
     try:
         query_embedding = await embed_text(body.query)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Embedding error: {str(e)}")
 
-    # pgvector <=> = cosine distance (lower = more similar)
-    # 1 - distance = similarity score
+    embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
+
     sql = """
         SELECT
-            id,
-            user_id,
-            owner_id,
-            event_type,
-            payload,
-            created_at,
-            1 - (embedding <=> $1::vector) AS similarity
+            id, user_id, owner_id, event_type, payload, created_at,
+            1 - (embedding <=> $1) AS similarity
         FROM events
         WHERE owner_id = $2
           AND embedding IS NOT NULL
         ORDER BY embedding <=> $1
         LIMIT $3
     """
-    embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
 
-    rows = await conn.fetch(
-        sql,
-        embedding_str,
-        current_user.id,
-        body.limit
-    )
+    rows = await conn.fetch(sql, embedding_str, current_user.id, body.limit)
 
     results = [
         SemanticSearchResult(
@@ -281,4 +281,94 @@ async def semantic_search(
         query        = body.query,
         results      = results,
         result_count = len(results)
+    )
+
+
+# ── POST /events/ai/anomaly/train ──────────────────────────
+@router.post("/ai/anomaly/train", response_model=AnomalyTrainResponse)
+@limiter.limit("5/minute")
+async def train_anomaly(
+    request:      Request,
+    db:           Session = Depends(get_db),
+    current_user: User    = Depends(get_current_user)
+):
+    """
+    Train IsolationForest anomaly detection model on your events.
+    Saves model to disk. Run this once after creating enough events (5+).
+    """
+    events = db.query(Event).filter(Event.owner_id == current_user.id).all()
+    events_data = [
+        {
+            "id":         e.id,
+            "event_type": e.event_type,
+            "payload":    e.payload or {}
+        }
+        for e in events
+    ]
+
+    try:
+        result = train_model(events_data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Training error: {str(e)}")
+
+    return AnomalyTrainResponse(
+        message           = f"Model trained successfully on {result['events_trained_on']} events.",
+        events_trained_on = result["events_trained_on"],
+        model_path        = result["model_path"],
+        avg_score         = result["avg_score"],
+        min_score         = result["min_score"],
+        max_score         = result["max_score"],
+        threshold         = result["threshold"],
+    )
+
+
+# ── GET /events/ai/anomaly/scan ────────────────────────────
+@router.get("/ai/anomaly/scan", response_model=AnomalyScanResponse)
+@limiter.limit("5/minute")
+async def scan_anomalies(
+    request:      Request,
+    db:           Session = Depends(get_db),
+    current_user: User    = Depends(get_current_user)
+):
+    """
+    Score ALL your events using the trained model.
+    Updates anomaly_score and is_anomaly on every event.
+    CDC trigger automatically logs these updates to the audit trail.
+    """
+    events = db.query(Event).filter(Event.owner_id == current_user.id).all()
+    events_data = [
+        {
+            "id":         e.id,
+            "event_type": e.event_type,
+            "payload":    e.payload or {}
+        }
+        for e in events
+    ]
+
+    try:
+        scored = score_all_events(events_data)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scoring error: {str(e)}")
+
+    # Update DB
+    anomaly_count = 0
+    for result in scored:
+        event = db.query(Event).filter(Event.id == result["id"]).first()
+        if event:
+            event.anomaly_score = result["anomaly_score"]
+            event.is_anomaly    = result["is_anomaly"]
+            if result["is_anomaly"]:
+                anomaly_count += 1
+
+    db.commit()
+
+    return AnomalyScanResponse(
+        message         = f"Scanned {len(scored)} events. Found {anomaly_count} anomalies.",
+        events_scanned  = len(scored),
+        anomalies_found = anomaly_count,
+        results         = scored
     )

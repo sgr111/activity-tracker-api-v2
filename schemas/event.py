@@ -30,13 +30,15 @@ class EventUpdate(BaseModel):
 
 
 class EventResponse(BaseModel):
-    id:         int
-    user_id:    int
-    owner_id:   Optional[int]
-    event_type: str
-    payload:    dict[str, Any]
-    created_at: datetime
-    updated_at: datetime
+    id:            int
+    user_id:       int
+    owner_id:      Optional[int]
+    event_type:    str
+    payload:       dict[str, Any]
+    anomaly_score: Optional[float]
+    is_anomaly:    bool
+    created_at:    datetime
+    updated_at:    datetime
 
     model_config = {"from_attributes": True}
 
@@ -68,10 +70,10 @@ class SummaryResponse(BaseModel):
     events_used: int
 
 
-# ── Phase 2c/3a — Semantic Search ─────────────────────────
+# ── Semantic Search ────────────────────────────────────────
 class SemanticSearchRequest(BaseModel):
-    query: str  = Field(..., description="Natural language query to find similar events")
-    limit: int  = Field(default=5, ge=1, le=20)
+    query: str = Field(..., description="Natural language query to find similar events")
+    limit: int = Field(default=5, ge=1, le=20)
 
     model_config = {
         "json_schema_extra": {
@@ -97,3 +99,23 @@ class SemanticSearchResponse(BaseModel):
     query:        str
     results:      list[SemanticSearchResult]
     result_count: int
+
+
+# ── Anomaly Detection ──────────────────────────────────────
+class AnomalyTrainResponse(BaseModel):
+    message:           str
+    events_trained_on: int
+    model_path:        str
+    avg_score:         float
+    min_score:         float
+    max_score:         float
+    threshold:         float
+
+    model_config = {"protected_namespaces": ()}  # ← add this line
+
+
+class AnomalyScanResponse(BaseModel):
+    message:        str
+    events_scanned: int
+    anomalies_found: int
+    results:        list[dict[str, Any]]
