@@ -53,10 +53,7 @@ IMPORTANT rules:
 
 # ── Embedding helper ───────────────────────────────────────
 async def embed_text(text: str) -> list[float]:
-    """
-    Convert text to a 3072-dimension vector using Gemini Embeddings.
-    Used for both storing event embeddings and querying semantic search.
-    """
+    """Convert text to 3072-dim vector using Gemini Embeddings."""
     result = genai.embed_content(
         model=EMBEDDING_MODEL,
         content=text,
@@ -66,10 +63,7 @@ async def embed_text(text: str) -> list[float]:
 
 
 def event_to_text(event_type: str, payload: dict) -> str:
-    """
-    Convert an event into a plain text string for embedding.
-    Richer text = better semantic search results.
-    """
+    """Convert an event into plain text for embedding."""
     parts = [f"event type: {event_type}"]
     for key, value in payload.items():
         if key not in ("enriched", "enrichment_source", "enrichment_error"):
@@ -79,7 +73,7 @@ def event_to_text(event_type: str, payload: dict) -> str:
 
 # ── NL to SQL ──────────────────────────────────────────────
 async def natural_language_to_sql(question: str) -> str:
-    """Convert a plain English question into a PostgreSQL SELECT query via Gemini."""
+    """Convert plain English to PostgreSQL SELECT via Gemini."""
     prompt = f"""{DB_SCHEMA}
 
 Convert this question into a valid PostgreSQL SELECT query:
@@ -100,7 +94,7 @@ Return only the raw SQL. No explanation. No markdown. No backticks."""
 
 # ── Event summarisation ────────────────────────────────────
 async def summarise_events(events: list[dict]) -> str:
-    """Use Gemini to produce a plain-English summary of a list of events."""
+    """Use Gemini to produce a plain-English summary of events."""
     if not events:
         return "No events found to summarise."
 
@@ -121,3 +115,90 @@ Be direct and specific. Use numbers where possible."""
 
     response = model.generate_content(prompt)
     return response.text.strip()
+
+
+# ── RAG Pipeline ───────────────────────────────────────────
+async def rag_answer(
+    question:    str,
+    user_id:     int,
+    async_conn,
+    top_k:       int = 10
+) -> dict:
+    """
+    Full RAG pipeline:
+    1. RETRIEVE  — embed question, find top-K similar events via pgvector
+    2. AUGMENT   — format retrieved events as structured context
+    3. GENERATE  — send question + context to Gemini, answer from context only
+
+    Returns: {answer, source_events, events_used}
+    """
+
+    # ── Step 1: RETRIEVE ──────────────────────────────────
+    query_embedding = await embed_text(question)
+    embedding_str   = "[" + ",".join(str(x) for x in query_embedding) + "]"
+
+    sql = """
+        SELECT
+            id, user_id, event_type, payload, created_at,
+            1 - (embedding <=> $1) AS similarity
+        FROM events
+        WHERE owner_id = $2
+          AND embedding IS NOT NULL
+        ORDER BY embedding <=> $1
+        LIMIT $3
+    """
+    rows = await async_conn.fetch(sql, embedding_str, user_id, top_k)
+
+    if not rows:
+        return {
+            "answer":        "No relevant events found in your data to answer this question.",
+            "source_events": [],
+            "events_used":   0
+        }
+
+    # ── Step 2: AUGMENT ───────────────────────────────────
+    source_events = []
+    context_parts = []
+
+    for i, row in enumerate(rows, 1):
+        payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else dict(row["payload"])
+        event   = {
+            "id":         row["id"],
+            "event_type": row["event_type"],
+            "payload":    payload,
+            "created_at": str(row["created_at"]),
+            "similarity": round(float(row["similarity"]), 4)
+        }
+        source_events.append(event)
+
+        # Format as readable context line
+        context_parts.append(
+            f"Event {i}: type={row['event_type']}, "
+            f"data={json.dumps(payload, default=str)}, "
+            f"time={str(row['created_at'])}"
+        )
+
+    context = "\n".join(context_parts)
+
+    # ── Step 3: GENERATE ──────────────────────────────────
+    prompt = f"""You are an assistant analyzing user activity data.
+
+Here are the most relevant activity events from the database:
+{context}
+
+Answer the following question using ONLY the data provided above.
+If the answer cannot be determined from the provided events, say so clearly.
+Do not make up information. Be specific and use event details in your answer.
+
+Question: {question}
+
+Answer:"""
+
+    response = model.generate_content(prompt)
+    answer   = response.text.strip()
+
+    return {
+        "answer":        answer,
+        "source_events": source_events,
+        "events_used":   len(source_events)
+    }

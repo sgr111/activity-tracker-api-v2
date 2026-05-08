@@ -111,11 +111,33 @@ class AnomalyTrainResponse(BaseModel):
     max_score:         float
     threshold:         float
 
-    model_config = {"protected_namespaces": ()}  # ← add this line
+    model_config = {"protected_namespaces": ()}
 
 
 class AnomalyScanResponse(BaseModel):
-    message:        str
-    events_scanned: int
+    message:         str
+    events_scanned:  int
     anomalies_found: int
-    results:        list[dict[str, Any]]
+    results:         list[dict[str, Any]]
+
+
+# ── RAG Pipeline ──────────────────────────────────────────
+class RAGRequest(BaseModel):
+    question: str = Field(..., description="Plain English question about your activity data")
+    top_k:    int = Field(default=10, ge=1, le=20, description="Number of events to retrieve")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "question": "Have there been any suspicious login attempts?",
+                "top_k":    10
+            }
+        }
+    }
+
+
+class RAGResponse(BaseModel):
+    question:      str
+    answer:        str
+    source_events: list[dict[str, Any]]
+    events_used:   int

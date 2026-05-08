@@ -13,12 +13,13 @@ from schemas import (
     NLSearchRequest, NLSearchResponse,
     SummaryRequest, SummaryResponse,
     SemanticSearchRequest, SemanticSearchResponse, SemanticSearchResult,
-    AnomalyTrainResponse, AnomalyScanResponse
+    AnomalyTrainResponse, AnomalyScanResponse,
+    RAGRequest, RAGResponse
 )
 from services.enrichment import enrich_event
 from services.ai_service import (
     natural_language_to_sql, summarise_events,
-    embed_text, event_to_text
+    embed_text, event_to_text, rag_answer
 )
 from services.auth_service import get_current_user, get_user_id_for_limit
 from services.anomaly_service import train_model, score_event, score_all_events
@@ -36,16 +37,14 @@ async def create_event(
     db:           Session = Depends(get_db),
     current_user: User    = Depends(get_current_user)
 ):
-    """Log a new activity event. Enriched via httpx. Embedded for semantic search. Auto-scored for anomalies."""
+    """Log a new activity event. Enriched, embedded, and auto-scored for anomalies."""
     async with httpx.AsyncClient() as client:
         enriched_payload = await enrich_event(client, body.payload)
 
-    # Generate embedding
     event_text = event_to_text(body.event_type, enriched_payload)
     embedding  = await embed_text(event_text)
 
-    # Auto-score anomaly using saved model (graceful if not trained yet)
-    event_dict = {"event_type": body.event_type, "payload": enriched_payload}
+    event_dict                = {"event_type": body.event_type, "payload": enriched_payload}
     anomaly_score, is_anomaly = score_event(event_dict)
 
     event = Event(
@@ -68,13 +67,13 @@ async def create_event(
 @limiter.limit("30/minute")
 async def list_events(
     request:      Request,
-    user_id:      int  | None = None,
-    event_type:   str  | None = None,
-    country:      str  | None = None,
-    is_anomaly:   bool | None = None,
-    limit:        int         = 20,
-    db:           Session     = Depends(get_db),
-    current_user: User        = Depends(get_current_user)
+    user_id:      int  | None  = None,
+    event_type:   str  | None  = None,
+    country:      str  | None  = None,
+    is_anomaly:   bool | None  = None,
+    limit:        int          = 20,
+    db:           Session      = Depends(get_db),
+    current_user: User         = Depends(get_current_user)
 ):
     """List your events. Filter by user_id, event_type, country, or is_anomaly."""
     query = db.query(Event).filter(Event.owner_id == current_user.id)
@@ -132,15 +131,13 @@ async def update_event(
     if body.payload is not None:
         event.payload = {**event.payload, **body.payload}
 
-    # Regenerate embedding
     event_text      = event_to_text(event.event_type, event.payload)
     event.embedding = await embed_text(event_text)
 
-    # Re-score anomaly
-    event_dict            = {"event_type": event.event_type, "payload": event.payload}
-    anomaly_score, is_anomaly = score_event(event_dict)
-    event.anomaly_score   = anomaly_score
-    event.is_anomaly      = is_anomaly
+    event_dict                    = {"event_type": event.event_type, "payload": event.payload}
+    anomaly_score, is_anomaly     = score_event(event_dict)
+    event.anomaly_score           = anomaly_score
+    event.is_anomaly              = is_anomaly
 
     db.commit()
     db.refresh(event)
@@ -292,17 +289,10 @@ async def train_anomaly(
     db:           Session = Depends(get_db),
     current_user: User    = Depends(get_current_user)
 ):
-    """
-    Train IsolationForest anomaly detection model on your events.
-    Saves model to disk. Run this once after creating enough events (5+).
-    """
-    events = db.query(Event).filter(Event.owner_id == current_user.id).all()
+    """Train IsolationForest anomaly detection model on your events."""
+    events      = db.query(Event).filter(Event.owner_id == current_user.id).all()
     events_data = [
-        {
-            "id":         e.id,
-            "event_type": e.event_type,
-            "payload":    e.payload or {}
-        }
+        {"id": e.id, "event_type": e.event_type, "payload": e.payload or {}}
         for e in events
     ]
 
@@ -332,18 +322,10 @@ async def scan_anomalies(
     db:           Session = Depends(get_db),
     current_user: User    = Depends(get_current_user)
 ):
-    """
-    Score ALL your events using the trained model.
-    Updates anomaly_score and is_anomaly on every event.
-    CDC trigger automatically logs these updates to the audit trail.
-    """
-    events = db.query(Event).filter(Event.owner_id == current_user.id).all()
+    """Score all your events. Updates anomaly_score and is_anomaly on every event."""
+    events      = db.query(Event).filter(Event.owner_id == current_user.id).all()
     events_data = [
-        {
-            "id":         e.id,
-            "event_type": e.event_type,
-            "payload":    e.payload or {}
-        }
+        {"id": e.id, "event_type": e.event_type, "payload": e.payload or {}}
         for e in events
     ]
 
@@ -354,7 +336,6 @@ async def scan_anomalies(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scoring error: {str(e)}")
 
-    # Update DB
     anomaly_count = 0
     for result in scored:
         event = db.query(Event).filter(Event.id == result["id"]).first()
@@ -363,7 +344,6 @@ async def scan_anomalies(
             event.is_anomaly    = result["is_anomaly"]
             if result["is_anomaly"]:
                 anomaly_count += 1
-
     db.commit()
 
     return AnomalyScanResponse(
@@ -371,4 +351,40 @@ async def scan_anomalies(
         events_scanned  = len(scored),
         anomalies_found = anomaly_count,
         results         = scored
+    )
+
+
+# ── POST /events/ai/ask ────────────────────────────────────
+@router.post("/ai/ask", response_model=RAGResponse)
+@limiter.limit("5/minute")
+async def rag_ask(
+    request:      Request,
+    body:         RAGRequest,
+    conn          = Depends(get_async_conn),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    RAG Pipeline — Retrieval Augmented Generation.
+
+    1. RETRIEVE  — embeds your question, finds top-K similar events via pgvector
+    2. AUGMENT   — formats retrieved events as structured context
+    3. GENERATE  — Gemini answers from context only (no hallucination)
+
+    Ask anything about your activity data in plain English.
+    """
+    try:
+        result = await rag_answer(
+            question   = body.question,
+            user_id    = current_user.id,
+            async_conn = conn,
+            top_k      = body.top_k
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"RAG error: {str(e)}")
+
+    return RAGResponse(
+        question      = body.question,
+        answer        = result["answer"],
+        source_events = result["source_events"],
+        events_used   = result["events_used"]
     )
