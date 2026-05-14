@@ -1,10 +1,18 @@
 # 🎯 Activity Tracker API
 
+![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-336791?logo=postgresql&logoColor=white)
+![pgvector](https://img.shields.io/badge/pgvector-0.8.2-orange?logo=postgresql&logoColor=white)
+![Gemini](https://img.shields.io/badge/Gemini_AI-Free_Tier-4285F4?logo=google&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-53_passing-brightgreen?logo=pytest&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green)
+
 > A production-style AI-powered backend built with FastAPI, PostgreSQL, pgvector, and Google Gemini.
 
 A FastAPI project demonstrating:
 - **JSONB** — flexible event payloads in PostgreSQL
-- **CDC** — automatic audit trail via PostgreSQL triggers  
+- **CDC** — automatic audit trail via PostgreSQL triggers
 - **Alembic** — versioned schema migrations
 - **JWT Auth** — register, login, per-user rate limiting
 - **SlowAPI** — rate limiting on all endpoints
@@ -13,6 +21,7 @@ A FastAPI project demonstrating:
 - **Gemini AI** — natural language search + event summarisation
 - **IsolationForest** — automatic anomaly detection on every insert
 - **RAG Pipeline** — grounded Q&A from your real event data, zero hallucination
+- **pytest** — 53-test suite covering auth, CRUD, AI endpoints, and security
 
 ---
 
@@ -83,6 +92,65 @@ Open **http://localhost:8000/docs** — Swagger UI with all endpoints.
 
 ---
 
+## 🧪 Testing
+
+### Setup test database (one-time)
+```bash
+psql -U postgres -c "CREATE DATABASE activity_tracker_test;"
+psql -U postgres -d activity_tracker_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+### Run the full test suite
+```bash
+pytest
+```
+
+### Run with verbose output
+```bash
+pytest -v
+```
+
+### Run a specific test file
+```bash
+pytest tests/test_auth.py -v
+pytest tests/test_events.py -v
+pytest tests/test_ai.py -v
+```
+
+### Run a single test
+```bash
+pytest tests/test_auth.py::TestLogin::test_login_success -v
+```
+
+### Test coverage
+```bash
+pip install pytest-cov
+pytest --cov=. --cov-report=html
+```
+
+### Test suite breakdown — 53 tests
+
+| File | Tests | What It Covers |
+|------|-------|---------------|
+| `test_auth.py` | 12 | Register, login, JWT token, duplicate email, missing fields |
+| `test_events.py` | 18 | CRUD operations, JSONB filtering, payload merge, 404 handling |
+| `test_audit.py` | 7 | CDC audit trail endpoints, operation filtering, limit |
+| `test_ai.py` | 10 | NL search, summary, anomaly detection, non-SELECT SQL blocking, health |
+| `test_security.py` | 6 | JWT expiry, no-token rejection, owner_id data scoping |
+
+### What is mocked in tests
+- **Gemini API** — `genai.embed_content()` and `model.generate_content()` are mocked with session-scoped fixtures so tests never hit the real API
+- **httpx enrichment** — external API call is mocked to return a 200 response
+- **asyncpg pool** — mocked so tests don't need a live asyncpg connection
+
+### Known test limitation — CDC triggers
+The test database is set up using SQLAlchemy's `Base.metadata.create_all()` which creates tables from ORM models but does **not** install PostgreSQL trigger functions. CDC audit trail tests (INSERT/UPDATE/DELETE trigger firing) are verified manually via Swagger. To enable CDC trigger tests in CI, run Alembic migrations against the test database:
+```bash
+alembic -x db=test upgrade head
+```
+
+---
+
 ## 📁 Project Structure
 
 ```
@@ -118,6 +186,14 @@ activity_tracker/
 │       ├── 002_add_users_table.py   # users table + owner_id FK
 │       ├── 003_add_embedding_column.py  # vector(3072) column
 │       └── 004_add_anomaly_columns.py   # anomaly_score + is_anomaly
+│
+├── tests/
+│   ├── conftest.py                  # Fixtures, mocks, shared test client
+│   ├── test_auth.py                 # Auth flow tests
+│   ├── test_events.py               # Event CRUD tests
+│   ├── test_audit.py                # CDC audit trail tests
+│   ├── test_ai.py                   # AI endpoint tests
+│   └── test_security.py             # JWT + ownership scoping tests
 │
 └── migrations/
     └── init.sql                     # Human-readable schema reference
@@ -170,29 +246,29 @@ activity_tracker/
 ## 🏛️ Architecture
 
 ```
-                    ┌─────────────────────────────────┐
-                    │         FastAPI Application      │
-                    │                                  │
-         JWT Auth ──┤  routers/auth.py                 │
-                    │  routers/events.py  ─────────────┼── SQLAlchemy ORM (CRUD/auth)
-                    │  routers/audit.py                │        │
-                    └──────────────┬──────────────────-┘        │
-                                   │                             ▼
-                    ┌──────────────▼──────────────────┐   ┌─────────────┐
-                    │         AI Services              │   │  PostgreSQL │
-                    │                                  │   │             │
-                    │  Gemini Flash ── NL Search       │   │  events     │
-                    │  Gemini Flash ── Summarisation   │   │  (JSONB +   │
-                    │  Gemini Flash ── RAG Generation  │   │   vector +  │
-                    │  Gemini Embed ── embed_text()    │   │   anomaly)  │
-                    │  IsolationForest ── anomaly      │   │             │
-                    │                                  │   │  events_audit│
-                    └──────────────────────────────────┘   │  (CDC auto) │
-                                   │                       │             │
-                    asyncpg ───────┼──────────────────────▶│  pgvector   │
-                    (pgvector <=>  │  semantic + RAG)       │  <=> cosine │
-                                   │                       └─────────────┘
-                    httpx ─────────┘ (payload enrichment)
+                ┌─────────────────────────────────┐
+                │         FastAPI Application      │
+                │                                  │
+     JWT Auth ──┤  routers/auth.py                 │
+                │  routers/events.py  ─────────────┼── SQLAlchemy ORM (CRUD/auth)
+                │  routers/audit.py                │        │
+                └──────────────┬──────────────────-┘        │
+                               │                             ▼
+                ┌──────────────▼──────────────────┐   ┌─────────────┐
+                │         AI Services              │   │  PostgreSQL │
+                │                                  │   │             │
+                │  Gemini Flash ── NL Search       │   │  events     │
+                │  Gemini Flash ── Summarisation   │   │  (JSONB +   │
+                │  Gemini Flash ── RAG Generation  │   │   vector +  │
+                │  Gemini Embed ── embed_text()    │   │   anomaly)  │
+                │  IsolationForest ── anomaly      │   │             │
+                │                                  │   │  events_audit│
+                └──────────────────────────────────┘   │  (CDC auto) │
+                               │                       │             │
+                asyncpg ───────┼──────────────────────▶│  pgvector   │
+                (pgvector <=>  │  semantic + RAG)       │  <=> cosine │
+                               │                       └─────────────┘
+                httpx ─────────┘ (payload enrichment)
 ```
 
 ---
@@ -224,31 +300,60 @@ Every new event auto-scored on insert. No API cost — runs locally.
 
 ---
 
+## ⚠️ Known Limitations
+
+### 1. pgvector Index — 2000 Dimension Limit
+pgvector's ANN indexes (HNSW and IVFFlat) both have a hard limit of **2000 dimensions**. The current Gemini embedding model (`gemini-embedding-001`) produces **3072-dimension** vectors by default, which exceeds this limit. As a result, no vector index is created — the API uses **exact cosine similarity search** (sequential scan).
+
+**Impact:** Exact search is fast for small-to-medium datasets (up to ~10,000 events). At scale, consider:
+- Using `output_dimensionality=768` with Matryoshka-capable models to stay within the 2000-dim limit
+- Switching to a dedicated vector database (Pinecone, Weaviate) for millions of vectors
+
+### 2. CDC Triggers Not Installed on Test Database
+The test suite uses `Base.metadata.create_all()` to set up the test database, which creates tables from SQLAlchemy ORM models but does **not** run Alembic migrations or install PostgreSQL trigger functions. The CDC audit trigger (`trg_audit_events`) is not present on the test database.
+
+**Impact:** CDC trigger behaviour (auto-logging INSERT/UPDATE/DELETE) is verified manually via Swagger UI, not via automated tests. The audit endpoint tests verify the API layer only.
+
+**Fix for CI:** Run `alembic upgrade head` against the test database instead of using `create_all()`.
+
+### 3. Anomaly Model Requires Minimum 5 Events
+The IsolationForest model requires at least 5 events to train. New users with fewer than 5 events will receive a graceful fallback (`anomaly_score: 0.0, is_anomaly: false`) until the model is trained.
+
+### 4. Gemini Model Names Change Frequently
+Google deprecates Gemini model names regularly. If you encounter a `404 Not Found` error from the Gemini API, check the current model names at [aistudio.google.com](https://aistudio.google.com) and update `services/ai_service.py`:
+```python
+model           = genai.GenerativeModel("gemini-2.5-flash")   # update if deprecated
+EMBEDDING_MODEL = "models/gemini-embedding-001"               # update if deprecated
+```
+
+---
+
 ## 🛠️ Tech Stack
 
 ```
-FastAPI          — API framework
-PostgreSQL 18    — Primary database
-JSONB + GIN      — Flexible event storage + fast queries
-pgvector         — Vector similarity search
-CDC Triggers     — Automatic audit trail
-Alembic          — Schema version control
-SQLAlchemy ORM   — CRUD + auth routes
-asyncpg          — AI routes (pgvector operators)
-JWT + bcrypt     — Authentication
-SlowAPI          — Per-user rate limiting
-httpx            — Async payload enrichment
-Gemini Flash     — NL search, summarisation, RAG generation
+FastAPI           — API framework
+PostgreSQL 18     — Primary database
+JSONB + GIN       — Flexible event storage + fast queries
+pgvector          — Vector similarity search (exact cosine, 3072 dims)
+CDC Triggers      — Automatic audit trail
+Alembic           — Schema version control (4 migrations)
+SQLAlchemy ORM    — CRUD + auth routes
+asyncpg           — AI routes (pgvector operators)
+JWT + bcrypt      — Authentication
+SlowAPI           — Per-user rate limiting
+httpx             — Async payload enrichment
+Gemini Flash      — NL search, summarisation, RAG generation
 Gemini Embeddings — 3072-dim event vectors
-scikit-learn     — IsolationForest anomaly detection
-joblib           — ML model serialisation
+scikit-learn      — IsolationForest anomaly detection
+joblib            — ML model serialisation
+pytest            — 53-test suite (auth, CRUD, AI, security)
 ```
 
 ---
 
 ## 💬 Interview One-Liner
 
-> *"I built a production-style activity tracking API with JWT auth, CDC audit trails via PostgreSQL triggers, flexible JSONB event storage, and a hybrid asyncpg+SQLAlchemy architecture. On top of that I added five AI features: natural language search using Gemini to convert questions to SQL, semantic search with pgvector and Gemini embeddings for meaning-based retrieval, automatic anomaly detection using IsolationForest on every insert, and a full RAG pipeline where user questions are answered by retrieving the most relevant events via cosine similarity and grounding Gemini responses in real data. Everything runs on PostgreSQL with zero external vector databases. All AI is free — Gemini Flash, Gemini Embeddings, and scikit-learn."*
+> *"I built a production-style activity tracking API with JWT auth, CDC audit trails via PostgreSQL triggers, flexible JSONB event storage, and a hybrid asyncpg+SQLAlchemy architecture. On top of that I added five AI features: natural language search using Gemini to convert questions to SQL, semantic search with pgvector and Gemini embeddings for meaning-based retrieval, automatic anomaly detection using IsolationForest on every insert, and a full RAG pipeline where user questions are answered by retrieving the most relevant events via cosine similarity and grounding Gemini responses in real data. The project is covered by a 53-test pytest suite with mocked Gemini calls, session-scoped shared fixtures to handle rate limits, and AsyncMock for async teardown. Everything runs on PostgreSQL with zero external vector databases. All AI is free — Gemini Flash, Gemini Embeddings, and scikit-learn."*
 
 ---
 
@@ -259,6 +364,9 @@ uvicorn main:app --reload        # Start server
 alembic upgrade head             # Apply all migrations
 alembic downgrade -1             # Rollback one migration
 alembic history --verbose        # See migration history
+pytest                           # Run full test suite (53 tests)
+pytest -v                        # Verbose test output
+pytest --cov=. --cov-report=html # Test coverage report
 ```
 
 ---
