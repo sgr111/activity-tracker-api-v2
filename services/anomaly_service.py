@@ -6,7 +6,6 @@ from sklearn.ensemble import IsolationForest
 from typing import Any
 
 MODEL_PATH = "models/anomaly_model.pkl"
-ANOMALY_THRESHOLD = -0.1  # scores below this = anomaly
 
 
 # ── Feature extraction ─────────────────────────────────────
@@ -63,7 +62,15 @@ def train_model(events: list[dict]) -> dict:
     """
     Train IsolationForest on existing events.
     Saves model to disk as models/anomaly_model.pkl.
-    Returns training summary.
+
+    IMPORTANT: does NOT use a fixed score threshold. IsolationForest's raw
+    score_samples() output shifts depending on the training data itself, so a
+    hardcoded cutoff (e.g. -0.1) can end up flagging everything or nothing
+    depending on dataset size/shape. Instead we rely on the model's own
+    decision_function(), which is score_samples() minus an internal offset_
+    computed from `contamination` — this self-adjusts to the data and is
+    the same boundary model.predict() uses (< 0 = anomaly, respecting the
+    configured contamination rate).
     """
     if len(events) < 5:
         raise ValueError("Need at least 5 events to train the anomaly model.")
@@ -81,15 +88,15 @@ def train_model(events: list[dict]) -> dict:
 
     joblib.dump(model, MODEL_PATH)
 
-    # Score training data to show distribution
-    scores = model.score_samples(df)
+    # Score training data to show distribution (decision_function, not raw score_samples)
+    decision_scores = model.decision_function(df)
     return {
         "events_trained_on": len(events),
         "model_path":        MODEL_PATH,
-        "avg_score":         round(float(np.mean(scores)), 4),
-        "min_score":         round(float(np.min(scores)), 4),
-        "max_score":         round(float(np.max(scores)), 4),
-        "threshold":         ANOMALY_THRESHOLD,
+        "avg_score":         round(float(np.mean(decision_scores)), 4),
+        "min_score":         round(float(np.min(decision_scores)), 4),
+        "max_score":         round(float(np.max(decision_scores)), 4),
+        "threshold":         0.0,  # decision_function boundary is always 0 by definition
     }
 
 
@@ -105,8 +112,8 @@ def score_event(event: dict) -> tuple[float, bool]:
 
     model = joblib.load(MODEL_PATH)
     df    = extract_features([event])
-    score = float(model.score_samples(df)[0])
-    return round(score, 4), score < ANOMALY_THRESHOLD
+    score = float(model.decision_function(df)[0])
+    return round(score, 4), score < 0
 
 
 # ── Score all events ───────────────────────────────────────
@@ -123,7 +130,7 @@ def score_all_events(events: list[dict]) -> list[dict]:
 
     model  = joblib.load(MODEL_PATH)
     df     = extract_features(events)
-    scores = model.score_samples(df)
+    scores = model.decision_function(df)
 
     results = []
     for i, event in enumerate(events):
@@ -131,7 +138,7 @@ def score_all_events(events: list[dict]) -> list[dict]:
         results.append({
             "id":            event["id"],
             "anomaly_score": score,
-            "is_anomaly":    score < ANOMALY_THRESHOLD
+            "is_anomaly":    score < 0
         })
 
     return results
