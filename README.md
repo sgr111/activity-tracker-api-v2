@@ -143,6 +143,24 @@ pytest --cov=. --cov-report=html
 - **httpx enrichment** — external API call is mocked to return a 200 response
 - **asyncpg pool** — mocked so tests don't need a live asyncpg connection
 
+### Integration tests (real Gemini, real anomaly model)
+The 53-test suite above is fully mocked — it verifies code logic, not whether
+Gemini or the trained anomaly model actually behave sanely against real data.
+`test_integration_ai.py` (project root) fills that gap: it hits a live running
+server with real HTTP calls, registers a throwaway user, creates real events,
+and checks:
+- Gemini summary/RAG endpoints return real, non-empty, data-grounded answers
+- Anomaly detection is *selective* — not everything gets flagged, and a
+  deliberately planted suspicious event is correctly caught
+
+This test is **not** run by plain `pytest` (it needs a live server and makes
+real API calls, so it's excluded from routine/CI runs). Run it manually
+before a demo or deploy:
+```bash
+uvicorn main:app --reload        # start the server first, in one terminal
+pytest test_integration_ai.py -v # in a second terminal
+```
+
 ### Known test limitation — CDC triggers
 The test database is set up using SQLAlchemy's `Base.metadata.create_all()` which creates tables from ORM models but does **not** install PostgreSQL trigger functions. CDC audit trail tests (INSERT/UPDATE/DELETE trigger firing) are verified manually via Swagger. To enable CDC trigger tests in CI, run Alembic migrations against the test database:
 ```bash
@@ -298,6 +316,14 @@ IsolationForest trained on your events. Features extracted from JSONB:
 `event_type`, `status`, `country`, `device`, `amount`, `duration_ms`
 Every new event auto-scored on insert. No API cost — runs locally.
 
+Anomaly classification uses the model's own `decision_function()` (anomaly
+if score < 0) rather than a fixed score cutoff. `IsolationForest`'s raw
+`score_samples()` output shifts depending on the training data's size and
+spread, so a hardcoded threshold can end up flagging everything or nothing
+depending on the dataset. `decision_function()` self-adjusts based on the
+configured `contamination` rate (currently 0.1), giving a stable boundary
+regardless of dataset shape.
+
 ---
 
 ## ⚠️ Known Limitations
@@ -316,10 +342,19 @@ The test suite uses `Base.metadata.create_all()` to set up the test database, wh
 
 **Fix for CI:** Run `alembic upgrade head` against the test database instead of using `create_all()`.
 
-### 3. Anomaly Model Requires Minimum 5 Events
+### 3. ~~Fixed Anomaly Score Threshold~~ — Fixed
+Earlier versions compared `IsolationForest.score_samples()` against a
+hardcoded constant (`-0.1`). Since that raw score's range shifts with the
+training data, this caused inconsistent behavior — sometimes flagging almost
+everything, sometimes almost nothing, depending on dataset size/shape. Fixed
+by switching to `model.decision_function()`, which self-adjusts to the data
+via the configured `contamination` rate. Caught by `test_integration_ai.py`,
+which asserts anomaly detection is selective rather than all-or-nothing.
+
+### 4. Anomaly Model Requires Minimum 5 Events
 The IsolationForest model requires at least 5 events to train. New users with fewer than 5 events will receive a graceful fallback (`anomaly_score: 0.0, is_anomaly: false`) until the model is trained.
 
-### 4. Gemini Model Names Change Frequently
+### 5. Gemini Model Names Change Frequently
 Google deprecates Gemini model names regularly. If you encounter a `404 Not Found` error from the Gemini API, check the current model names at [aistudio.google.com](https://aistudio.google.com) and update `services/ai_service.py`:
 ```python
 model           = genai.GenerativeModel("gemini-2.5-flash")   # update if deprecated
