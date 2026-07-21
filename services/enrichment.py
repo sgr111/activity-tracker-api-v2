@@ -12,8 +12,8 @@ async def enrich_event(client: httpx.AsyncClient, payload: dict[str, Any]) -> di
 
     try:
         ip = payload.get("ip")
-        if ip:
-            res = await client.get(MOCK_GEO_API, params={"ip": ip}, timeout=3.0)
+        if ip:  # Call the mock geo API
+            res = await client.get(MOCK_GEO_API, params={"ip": ip}, timeout=3.0) 
             if res.status_code == 200:
                 enriched["enriched"]           = True
                 enriched["enrichment_source"]  = "httpbin_mock"
