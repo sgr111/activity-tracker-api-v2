@@ -80,13 +80,13 @@ def train_model(events: list[dict]) -> dict:
     df = extract_features(events)
 
     model = IsolationForest(
-        n_estimators=100,
+        n_estimators=100,   # number of trees in the forest
         contamination=0.1,  # expect ~10% anomalies
-        random_state=42
+        random_state=42    # reproducibility
     )
-    model.fit(df)
+    model.fit(df)          # Train the model
 
-    joblib.dump(model, MODEL_PATH)
+    joblib.dump(model, MODEL_PATH) # Save the trained model to disk
 
     # Score training data to show distribution (decision_function, not raw score_samples)
     decision_scores = model.decision_function(df)
@@ -107,7 +107,7 @@ def score_event(event: dict) -> tuple[float, bool]:
     Returns (anomaly_score, is_anomaly).
     Falls back gracefully if model not trained yet.
     """
-    if not os.path.exists(MODEL_PATH):
+    if not os.path.exists(MODEL_PATH): 
         return 0.0, False
 
     model = joblib.load(MODEL_PATH)
@@ -128,9 +128,9 @@ def score_all_events(events: list[dict]) -> list[dict]:
     if not events:
         return []
 
-    model  = joblib.load(MODEL_PATH)
-    df     = extract_features(events)
-    scores = model.decision_function(df)
+    model  = joblib.load(MODEL_PATH)  # Load the trained IsolationForest model
+    df     = extract_features(events)  # Extract features from the events
+    scores = model.decision_function(df) # Calculate anomaly scores
 
     results = []
     for i, event in enumerate(events):
