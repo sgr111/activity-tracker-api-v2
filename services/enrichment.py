@@ -1,9 +1,7 @@
 import httpx
 from typing import Any
 
-
 MOCK_GEO_API = "https://httpbin.org/anything"
-
 
 async def enrich_event(client: httpx.AsyncClient, payload: dict[str, Any]) -> dict[str, Any]:
     """

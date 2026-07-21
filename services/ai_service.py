@@ -44,7 +44,7 @@ Useful JSONB operators:
   payload ? 'key'          -- key exists
 
 IMPORTANT rules:
-  - Always return SELECT queries only. Never INSERT/UPDATE/DELETE.
+  - Always return SELECT queries only. Never INSERT/UPDATE/DELETE.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
   - Use LIMIT 50 unless user specifies otherwise.
   - Use payload->>'field' for JSONB field comparisons.
   - Return ONLY the raw SQL query, no explanation, no markdown, no backticks.
@@ -193,6 +193,10 @@ Do not make up information. Be specific and use event details in your answer.
 Question: {question}
 
 Answer:"""
+#above prompt makes sure that the model only uses the provided context
+# and does not hallucinate information. It instructs the model to be
+#  specific and to clearly state if the answer cannot be determined 
+# from the given events.
 
     response = model.generate_content(prompt)
     answer   = response.text.strip()
