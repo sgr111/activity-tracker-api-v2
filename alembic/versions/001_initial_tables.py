@@ -14,7 +14,7 @@ down_revision:  Union[str, None]        = None
 branch_labels:  Union[str, Sequence[str], None] = None
 depends_on:     Union[str, Sequence[str], None] = None
 
-
+#alembic revision --autogenerate -m "initial tables - events, events_audit, CDC trigger"
 def upgrade() -> None:
     # ── events table ───────────────────────────────────────
     op.create_table(
@@ -35,6 +35,8 @@ def upgrade() -> None:
     )
 
     # ── events_audit table ─────────────────────────────────
+    # The events_audit table is used for Change Data Capture (CDC) 
+    # to track changes in the events table.
     op.create_table(
         "events_audit",
         sa.Column("id",         sa.Integer(),               nullable=False),
@@ -53,6 +55,9 @@ def upgrade() -> None:
     )
 
     # ── CDC trigger function + trigger ─────────────────────
+    # The audit_events_fn() function is a PostgreSQL trigger function 
+    # that captures changes in the events table and 
+    # logs them into the events_audit table.
     op.execute("""
         CREATE OR REPLACE FUNCTION audit_events_fn()
         RETURNS TRIGGER AS $$
@@ -81,8 +86,9 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION audit_events_fn();
     """)
 
-
-def downgrade() -> None:
+#  this is the downgrade function to reverse the changes
+#  made in the upgrade function
+def downgrade() -> None: 
     op.execute("DROP TRIGGER IF EXISTS trg_audit_events ON events;")
     op.execute("DROP FUNCTION IF EXISTS audit_events_fn;")
     op.drop_table("events_audit")
