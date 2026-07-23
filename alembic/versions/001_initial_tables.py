@@ -62,7 +62,7 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION audit_events_fn()
         RETURNS TRIGGER AS $$
         BEGIN
-            IF TG_OP = 'INSERT' THEN
+            IF TG_OP = 'INSERT' THEN  
                 INSERT INTO events_audit (operation, new_data)
                 VALUES ('INSERT', row_to_json(NEW)::jsonb);
                 RETURN NEW;
@@ -77,7 +77,9 @@ def upgrade() -> None:
             END IF;
         END;
         $$ LANGUAGE plpgsql;
-    """)
+    """) # TG_OP is a special variable in PostgreSQL triggers
+         # that indicates the type of operation 
+         # that fired the trigger (INSERT, UPDATE, DELETE).
 
     op.execute("""
         DROP TRIGGER IF EXISTS trg_audit_events ON events;
