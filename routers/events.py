@@ -118,7 +118,8 @@ async def update_event(
     db:           Session = Depends(get_db),
     current_user: User    = Depends(get_current_user)
 ):
-    """Update event. CDC logs change. Embedding + anomaly score regenerated."""
+    """Update event. CDC logs change. Embedding + anomaly score regenerated
+    only if event_type or payload actually changed."""
     event = db.query(Event).filter(
         Event.id       == event_id,
         Event.owner_id == current_user.id
@@ -126,23 +127,35 @@ async def update_event(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    if body.event_type is not None:
+    # Track whether anything that affects the embedding actually changed,
+    # BEFORE mutating event.event_type / event.payload below.
+    content_changed = False
+
+    if body.event_type is not None and body.event_type != event.event_type:
+        content_changed = True
         event.event_type = body.event_type
+
     if body.payload is not None:
-        event.payload = {**event.payload, **body.payload}
+        merged_payload = {**event.payload, **body.payload}
+        if merged_payload != event.payload:
+            content_changed = True
+        event.payload = merged_payload
 
-    event_text      = event_to_text(event.event_type, event.payload)
-    event.embedding = await embed_text(event_text)
+    if content_changed:
+        # Only hits Gemini (embedding) and re-runs anomaly scoring when the
+        # actual content changed — avoids burning API quota and CPU on
+        # no-op updates (e.g. touching a field that ends up the same value).
+        event_text      = event_to_text(event.event_type, event.payload)
+        event.embedding = await embed_text(event_text)
 
-    event_dict                    = {"event_type": event.event_type, "payload": event.payload}
-    anomaly_score, is_anomaly     = score_event(event_dict)
-    event.anomaly_score           = anomaly_score
-    event.is_anomaly              = is_anomaly
+        event_dict                = {"event_type": event.event_type, "payload": event.payload}
+        anomaly_score, is_anomaly = score_event(event_dict)
+        event.anomaly_score       = anomaly_score
+        event.is_anomaly          = is_anomaly
 
     db.commit()
     db.refresh(event)
     return event
-
 
 # ── DELETE /events/{id} ────────────────────────────────────
 @router.delete("/{event_id}", status_code=204)
