@@ -16,3 +16,4 @@ numpy==2.4.4
 scikit-learn
 pandas
 joblib
+pydantic-settings==2.14.2
