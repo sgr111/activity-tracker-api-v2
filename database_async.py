@@ -1,10 +1,8 @@
-import os
 import asyncpg
-from dotenv import load_dotenv
 
-load_dotenv()
+from config import settings
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/activity_tracker")
+DATABASE_URL = settings.DATABASE_URL
 
 # Global pool — created in lifespan, closed on shutdown
 pool: asyncpg.Pool | None = None
