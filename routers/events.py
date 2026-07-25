@@ -139,7 +139,7 @@ async def update_event(
         merged_payload = {**event.payload, **body.payload}
         if merged_payload != event.payload:
             content_changed = True
-        event.payload = merged_payload
+            event.payload = merged_payload
 
     if content_changed:
         # Only hits Gemini (embedding) and re-runs anomaly scoring when the
