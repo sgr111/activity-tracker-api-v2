@@ -12,7 +12,7 @@
 
 A FastAPI project demonstrating:
 - **JSONB** — flexible event payloads in PostgreSQL
-- **CDC** — automatic audit trail via PostgreSQL triggers
+- **CDC** — automatic audit trail via PostgreSQL triggers, optimized to skip no-op updates
 - **Alembic** — versioned schema migrations
 - **JWT Auth** — register, login, per-user rate limiting
 - **SlowAPI** — rate limiting on all endpoints
@@ -21,6 +21,7 @@ A FastAPI project demonstrating:
 - **Gemini AI** — natural language search + event summarisation
 - **IsolationForest** — automatic anomaly detection on every insert
 - **RAG Pipeline** — grounded Q&A from your real event data, zero hallucination
+- **Centralized Config** — validated settings via `pydantic-settings`, no scattered `os.getenv()`
 - **pytest** — 53-test suite covering auth, CRUD, AI endpoints, and security
 
 ---
@@ -44,13 +45,14 @@ This is a **user activity tracking API** where authenticated users log events (l
 | Feature | Technology | What It Does |
 |---------|-----------|--------------|
 | **Flexible Event Storage** | PostgreSQL JSONB + GIN index | Store any event shape without schema changes |
-| **Automatic Audit Trail** | PostgreSQL CDC Triggers | Every INSERT/UPDATE/DELETE logged automatically at DB level |
+| **Automatic Audit Trail** | PostgreSQL CDC Triggers | Every INSERT/UPDATE/DELETE logged automatically at DB level, skipping true no-op updates |
 | **JWT Authentication** | python-jose + bcrypt | Register, login, protected routes, per-user data scoping |
 | **Per-User Rate Limiting** | SlowAPI | Each user gets their own rate limit bucket via JWT identity |
 | **Async HTTP Enrichment** | httpx | Every new event enriched via external API call on insert |
-| **Versioned Migrations** | Alembic | Full schema version control with upgrade/downgrade |
+| **Versioned Migrations** | Alembic | Full schema version control with upgrade/downgrade (6 migrations) |
 | **Hybrid DB Architecture** | SQLAlchemy ORM + asyncpg | ORM for CRUD/auth, asyncpg for AI routes needing pgvector operators |
 | **Vector Storage & Search** | pgvector | Events stored as 3072-dim vectors, searched by cosine similarity |
+| **Centralized Settings** | pydantic-settings | One validated `Settings` object instead of `os.getenv()` scattered across files |
 
 ---
 
@@ -75,6 +77,11 @@ SECRET_KEY=your_secret_key_here
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 ```
+All five values are loaded once, validated, and exposed through a single `Settings`
+object in `config.py` (see [Configuration Management](#-configuration-management)
+below). `SECRET_KEY` and `GEMINI_API_KEY` are **required** — the app will refuse to
+start with a clear error if either is missing, rather than silently falling back to
+an insecure default.
 
 ### 3. Set up PostgreSQL
 ```bash
@@ -89,6 +96,36 @@ uvicorn main:app --reload
 ```
 
 Open **http://localhost:8000/docs** — Swagger UI with all endpoints.
+
+---
+
+## 🔐 Configuration Management
+
+All environment-driven settings — the JWT secret, token expiry, the Gemini API key,
+and the database URL — are defined once in a single `config.py` at the project root,
+using `pydantic-settings`:
+
+```python
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    SECRET_KEY:                   str            # required — no insecure fallback
+    ALGORITHM:                    str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES:  int = 30
+    GEMINI_API_KEY:                str            # required
+    DATABASE_URL:                  str = "postgresql://postgres:password@localhost:5432/activity_tracker"
+
+settings = Settings()
+```
+
+Every other file imports the same object — `from config import settings` — instead of
+calling `os.getenv()` directly. This replaced an earlier pattern where four separate
+files (`auth_service.py`, `ai_service.py`, `database.py`, `database_async.py`) each
+read environment variables independently, `DATABASE_URL` was duplicated in two places,
+and `SECRET_KEY` silently fell back to the literal string `"fallback-secret-key"` if
+left unset — a real security risk in any environment where `.env` wasn't fully
+configured. Making `SECRET_KEY` and `GEMINI_API_KEY` required fields means a missing
+value now fails loudly at startup instead of silently running with an insecure default.
 
 ---
 
@@ -174,6 +211,7 @@ alembic -x db=test upgrade head
 ```
 activity_tracker/
 ├── main.py                          # App entry, lifespan, rate limiter
+├── config.py                        # Centralized, validated settings (pydantic-settings)
 ├── database.py                      # SQLAlchemy engine + get_db
 ├── database_async.py                # asyncpg pool + get_async_conn
 │
@@ -200,10 +238,12 @@ activity_tracker/
 │
 ├── alembic/
 │   └── versions/
-│       ├── 001_initial_tables.py    # events + events_audit + CDC trigger
-│       ├── 002_add_users_table.py   # users table + owner_id FK
-│       ├── 003_add_embedding_column.py  # vector(3072) column
-│       └── 004_add_anomaly_columns.py   # anomaly_score + is_anomaly
+│       ├── 001_initial_tables.py            # events + events_audit + CDC trigger
+│       ├── 002_add_users_table.py           # users table + owner_id FK
+│       ├── 003_add_embedding_column.py      # vector(3072) column
+│       ├── 004_add_anomaly_columns.py       # anomaly_score + is_anomaly
+│       ├── 005_optimize_audit_trigger.py    # skip no-op UPDATE logging (first attempt)
+│       └── 006_fix_trigger_exclude_updated_at.py  # exclude updated_at/created_at from no-op check
 │
 ├── tests/
 │   ├── conftest.py                  # Fixtures, mocks, shared test client
@@ -212,6 +252,8 @@ activity_tracker/
 │   ├── test_audit.py                # CDC audit trail tests
 │   ├── test_ai.py                   # AI endpoint tests
 │   └── test_security.py             # JWT + ownership scoping tests
+│
+├── test_integration_ai.py           # Real-API integration tests (not mocked, run manually)
 │
 └── migrations/
     └── init.sql                     # Human-readable schema reference
@@ -234,7 +276,7 @@ activity_tracker/
 | POST | `/events/` | 10/min | Log event (httpx enriched + embedded + anomaly scored) |
 | GET | `/events/` | 30/min | List your events (filter by type, country, is_anomaly) |
 | GET | `/events/{id}` | 30/min | Get single event |
-| PUT | `/events/{id}` | 10/min | Update event (CDC logs change, re-embeds) |
+| PUT | `/events/{id}` | 10/min | Update event — re-embeds and re-scores **only if** `event_type` or `payload` actually changed; a no-op update is a no-op write (no DB update, no audit row, no Gemini call) |
 | DELETE | `/events/{id}` | 5/min | Delete event (CDC logs deletion) |
 
 ### Events — AI
@@ -287,6 +329,10 @@ activity_tracker/
                 (pgvector <=>  │  semantic + RAG)       │  <=> cosine │
                                │                       └─────────────┘
                 httpx ─────────┘ (payload enrichment)
+
+        config.py (pydantic-settings) ── single source of truth for
+        SECRET_KEY / ALGORITHM / ACCESS_TOKEN_EXPIRE_MINUTES /
+        GEMINI_API_KEY / DATABASE_URL — imported by every service above
 ```
 
 ---
@@ -323,6 +369,16 @@ spread, so a hardcoded threshold can end up flagging everything or nothing
 depending on the dataset. `decision_function()` self-adjusts based on the
 configured `contamination` rate (currently 0.1), giving a stable boundary
 regardless of dataset shape.
+
+### Change-Aware Updates (CDC + Embedding Efficiency)
+`PUT /events/{id}` only re-embeds (Gemini call) and re-runs anomaly scoring
+when `event_type` or `payload` genuinely changed — a request that resends
+identical data is detected as a no-op and skips both the Gemini call and the
+database write entirely. On the database side, the CDC trigger independently
+compares old vs. new row content (excluding the auto-updating `updated_at`/
+`created_at` timestamp columns) before deciding whether to log an audit row,
+so even an update that does write to the row won't create audit noise unless
+something meaningful actually changed.
 
 ---
 
@@ -361,6 +417,31 @@ model           = genai.GenerativeModel("gemini-2.5-flash")   # update if deprec
 EMBEDDING_MODEL = "models/gemini-embedding-001"               # update if deprecated
 ```
 
+### 6. ~~Scattered Environment Variable Access~~ — Fixed
+Environment variables were previously read independently in four different
+files via `os.getenv()`, with `DATABASE_URL` duplicated across `database.py`
+and `database_async.py`, and `SECRET_KEY` silently falling back to an
+insecure default string if left unset. Fixed by introducing a single
+`config.py` with `pydantic-settings`: every setting is now read once,
+type-validated, and shared via one `settings` object. `SECRET_KEY` and
+`GEMINI_API_KEY` are required fields with no fallback, so a missing value
+now fails loudly at startup instead of running silently with an insecure
+default. See [Configuration Management](#-configuration-management) above.
+
+### 7. ~~Audit Trigger Logged No-Op Updates~~ — Fixed (two-part fix)
+Migration 005's first attempt at skipping no-op UPDATE logging
+(`IF OLD IS DISTINCT FROM NEW`) compared the entire row, including the
+`updated_at` column — which has `onupdate=func.now()` on the SQLAlchemy
+model and therefore changes on every UPDATE statement regardless of whether
+any real data changed. This meant the row always appeared "different,"
+silently defeating the optimization; manual audit-trail testing surfaced
+this. Fixed at two levels: migration 006 rewrote the trigger to exclude
+`updated_at`/`created_at` from the comparison (`to_jsonb(OLD) - 'updated_at'
+- 'created_at'` vs. the same on `NEW`), and `update_event()` in
+`routers/events.py` now only reassigns the `payload` attribute when the
+merged result is genuinely different — preventing SQLAlchemy from marking
+the row dirty (and therefore issuing an UPDATE at all) for a true no-op.
+
 ---
 
 ## 🛠️ Tech Stack
@@ -370,8 +451,8 @@ FastAPI           — API framework
 PostgreSQL 18     — Primary database
 JSONB + GIN       — Flexible event storage + fast queries
 pgvector          — Vector similarity search (exact cosine, 3072 dims)
-CDC Triggers      — Automatic audit trail
-Alembic           — Schema version control (4 migrations)
+CDC Triggers      — Automatic audit trail, no-op-aware
+Alembic           — Schema version control (6 migrations)
 SQLAlchemy ORM    — CRUD + auth routes
 asyncpg           — AI routes (pgvector operators)
 JWT + bcrypt      — Authentication
@@ -381,6 +462,7 @@ Gemini Flash      — NL search, summarisation, RAG generation
 Gemini Embeddings — 3072-dim event vectors
 scikit-learn      — IsolationForest anomaly detection
 joblib            — ML model serialisation
+pydantic-settings — Centralized, validated environment configuration
 pytest            — 53-test suite (auth, CRUD, AI, security)
 ```
 
@@ -388,7 +470,7 @@ pytest            — 53-test suite (auth, CRUD, AI, security)
 
 ## 💬 Interview One-Liner
 
-> *"I built a production-style activity tracking API with JWT auth, CDC audit trails via PostgreSQL triggers, flexible JSONB event storage, and a hybrid asyncpg+SQLAlchemy architecture. On top of that I added five AI features: natural language search using Gemini to convert questions to SQL, semantic search with pgvector and Gemini embeddings for meaning-based retrieval, automatic anomaly detection using IsolationForest on every insert, and a full RAG pipeline where user questions are answered by retrieving the most relevant events via cosine similarity and grounding Gemini responses in real data. The project is covered by a 53-test pytest suite with mocked Gemini calls, session-scoped shared fixtures to handle rate limits, and AsyncMock for async teardown. Everything runs on PostgreSQL with zero external vector databases. All AI is free — Gemini Flash, Gemini Embeddings, and scikit-learn."*
+> *"I built a production-style activity tracking API with JWT auth, CDC audit trails via PostgreSQL triggers, flexible JSONB event storage, and a hybrid asyncpg+SQLAlchemy architecture. On top of that I added five AI features: natural language search using Gemini to convert questions to SQL, semantic search with pgvector and Gemini embeddings for meaning-based retrieval, automatic anomaly detection using IsolationForest on every insert, and a full RAG pipeline where user questions are answered by retrieving the most relevant events via cosine similarity and grounding Gemini responses in real data. Configuration is centralized through pydantic-settings with required fields for secrets, so the app fails loudly at startup rather than silently running with an insecure default. Updates are change-aware end to end — the API layer skips re-embedding when nothing actually changed, and the database trigger independently avoids logging no-op audit rows by excluding metadata timestamps from its comparison. The project is covered by a 53-test pytest suite with mocked Gemini calls, plus a separate real-API integration suite that caught and verified the fix for an anomaly-detection threshold bug I found during manual testing. Everything runs on PostgreSQL with zero external vector databases. All AI is free — Gemini Flash, Gemini Embeddings, and scikit-learn."*
 
 ---
 
@@ -401,6 +483,7 @@ alembic downgrade -1             # Rollback one migration
 alembic history --verbose        # See migration history
 pytest                           # Run full test suite (53 tests)
 pytest -v                        # Verbose test output
+pytest test_integration_ai.py -v # Real-API integration tests (server must be running)
 pytest --cov=. --cov-report=html # Test coverage report
 ```
 
