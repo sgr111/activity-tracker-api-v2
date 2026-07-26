@@ -12,12 +12,11 @@ Run manually, with the server already running (uvicorn main:app --reload):
 
     pytest test_integration_update_audit.py -v
 
-Uses httpx (already a project dependency) — no new installs needed.
-Uses a fresh throwaway test user each run, so it never touches your real data.
+
 """
 
 import time
-import httpx
+import httpx    
 import pytest
 
 BASE_URL = "http://127.0.0.1:8000"
