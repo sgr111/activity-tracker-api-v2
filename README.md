@@ -9,6 +9,7 @@
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 > A production-style AI-powered backend built with FastAPI, PostgreSQL, pgvector, and Google Gemini.
+>*Built with 100% free AI — Gemini Flash, Gemini Embeddings, scikit-learn. No paid API required.*
 
 ## 💬 Introduction
 
@@ -488,4 +489,3 @@ pytest --cov=. --cov-report=html # Test coverage report
 
 ---
 
-*Built with 100% free AI — Gemini Flash, Gemini Embeddings, scikit-learn. No paid API required.*
