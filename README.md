@@ -14,6 +14,38 @@
 
 > *"I built a production-style activity tracking API with JWT auth, CDC audit trails via PostgreSQL triggers, flexible JSONB event storage, and a hybrid asyncpg+SQLAlchemy architecture. On top of that I added five AI features: natural language search using Gemini to convert questions to SQL, semantic search with pgvector and Gemini embeddings for meaning-based retrieval, automatic anomaly detection using IsolationForest on every insert, and a full RAG pipeline where user questions are answered by retrieving the most relevant events via cosine similarity and grounding Gemini responses in real data. Configuration is centralized through pydantic-settings with required fields for secrets, so the app fails loudly at startup rather than silently running with an insecure default. Updates are change-aware end to end — the API layer skips re-embedding when nothing actually changed, and the database trigger independently avoids logging no-op audit rows by excluding metadata timestamps from its comparison. The project is covered by a 53-test pytest suite with mocked Gemini calls, plus a separate real-API integration suite that caught and verified the fix for an anomaly-detection threshold bug I found during manual testing. Everything runs on PostgreSQL with zero external vector databases. All AI is free — Gemini Flash, Gemini Embeddings, and scikit-learn."*
 
+## 🏛️ Architecture
+
+```
+                ┌─────────────────────────────────┐
+                │         FastAPI Application      │
+                │                                  │
+     JWT Auth ──┤  routers/auth.py                 │
+                │  routers/events.py  ─────────────┼── SQLAlchemy ORM (CRUD/auth)
+                │  routers/audit.py                │        │
+                └──────────────┬──────────────────-┘        │
+                               │                             ▼
+                ┌──────────────▼──────────────────┐   ┌─────────────┐
+                │         AI Services              │   │  PostgreSQL │
+                │                                  │   │             │
+                │  Gemini Flash ── NL Search       │   │  events     │
+                │  Gemini Flash ── Summarisation   │   │  (JSONB +   │
+                │  Gemini Flash ── RAG Generation  │   │   vector +  │
+                │  Gemini Embed ── embed_text()    │   │   anomaly)  │
+                │  IsolationForest ── anomaly      │   │             │
+                │                                  │   │  events_audit│
+                └──────────────────────────────────┘   │  (CDC auto) │
+                               │                       │             │
+                asyncpg ───────┼──────────────────────▶│  pgvector   │
+                (pgvector <=>  │  semantic + RAG)       │  <=> cosine │
+                               │                       └─────────────┘
+                httpx ─────────┘ (payload enrichment)
+
+        config.py (pydantic-settings) ── single source of truth for
+        SECRET_KEY / ALGORITHM / ACCESS_TOKEN_EXPIRE_MINUTES /
+        GEMINI_API_KEY / DATABASE_URL — imported by every service above
+```
+
 A FastAPI project demonstrating:
 - **JSONB** — flexible event payloads in PostgreSQL
 - **CDC** — automatic audit trail via PostgreSQL triggers, optimized to skip no-op updates
@@ -306,38 +338,6 @@ activity_tracker/
 | GET | `/` | API info + docs links |
 
 ---
-
-## 🏛️ Architecture
-
-```
-                ┌─────────────────────────────────┐
-                │         FastAPI Application      │
-                │                                  │
-     JWT Auth ──┤  routers/auth.py                 │
-                │  routers/events.py  ─────────────┼── SQLAlchemy ORM (CRUD/auth)
-                │  routers/audit.py                │        │
-                └──────────────┬──────────────────-┘        │
-                               │                             ▼
-                ┌──────────────▼──────────────────┐   ┌─────────────┐
-                │         AI Services              │   │  PostgreSQL │
-                │                                  │   │             │
-                │  Gemini Flash ── NL Search       │   │  events     │
-                │  Gemini Flash ── Summarisation   │   │  (JSONB +   │
-                │  Gemini Flash ── RAG Generation  │   │   vector +  │
-                │  Gemini Embed ── embed_text()    │   │   anomaly)  │
-                │  IsolationForest ── anomaly      │   │             │
-                │                                  │   │  events_audit│
-                └──────────────────────────────────┘   │  (CDC auto) │
-                               │                       │             │
-                asyncpg ───────┼──────────────────────▶│  pgvector   │
-                (pgvector <=>  │  semantic + RAG)       │  <=> cosine │
-                               │                       └─────────────┘
-                httpx ─────────┘ (payload enrichment)
-
-        config.py (pydantic-settings) ── single source of truth for
-        SECRET_KEY / ALGORITHM / ACCESS_TOKEN_EXPIRE_MINUTES /
-        GEMINI_API_KEY / DATABASE_URL — imported by every service above
-```
 
 ---
 
