@@ -92,6 +92,148 @@ This is a **user activity tracking API** where authenticated users log events (l
 
 ---
 
+## 📁 Project Structure
+
+```
+activity_tracker/
+├── main.py                          # App entry, lifespan, rate limiter
+├── config.py                        # Centralized, validated settings (pydantic-settings)
+├── database.py                      # SQLAlchemy engine + get_db
+├── database_async.py                # asyncpg pool + get_async_conn
+│
+├── models/
+│   ├── user.py                      # User ORM model
+│   ├── event.py                     # Event model (JSONB + vector + anomaly)
+│   └── audit.py                     # EventAudit CDC model
+│
+├── schemas/
+│   ├── auth.py                      # Register/login/token schemas
+│   ├── event.py                     # Event + all AI request/response schemas
+│   └── audit.py                     # Audit response schema
+│
+├── routers/
+│   ├── auth.py                      # POST /auth/register, login, GET /auth/me
+│   ├── events.py                    # All event CRUD + 5 AI endpoints
+│   └── audit.py                     # CDC audit trail endpoints
+│
+├── services/
+│   ├── auth_service.py              # bcrypt, JWT encode/decode, get_current_user
+│   ├── ai_service.py                # Gemini NL search, summary, embeddings, RAG
+│   ├── enrichment.py                # httpx external API enrichment
+│   └── anomaly_service.py           # IsolationForest, feature extraction, joblib
+│
+├── alembic/
+│   └── versions/
+│       ├── 001_initial_tables.py            # events + events_audit + CDC trigger
+│       ├── 002_add_users_table.py           # users table + owner_id FK
+│       ├── 003_add_embedding_column.py      # vector(3072) column
+│       ├── 004_add_anomaly_columns.py       # anomaly_score + is_anomaly
+│       ├── 005_optimize_audit_trigger.py    # skip no-op UPDATE logging (first attempt)
+│       └── 006_fix_trigger_exclude_updated_at.py  # exclude updated_at/created_at from no-op check
+│
+├── tests/
+│   ├── conftest.py                  # Fixtures, mocks, shared test client
+│   ├── test_auth.py                 # Auth flow tests
+│   ├── test_events.py               # Event CRUD tests
+│   ├── test_audit.py                # CDC audit trail tests
+│   ├── test_ai.py                   # AI endpoint tests
+│   └── test_security.py             # JWT + ownership scoping tests
+│
+├── test_integration_ai.py           # Real-API integration tests (not mocked, run manually)
+│
+└── migrations/
+    └── init.sql                     # Human-readable schema reference
+```
+
+
+## 🔍 How The AI Features Work
+
+### Natural Language Search
+User asks `"show me failed logins from India"` → Gemini converts it to:
+```sql
+SELECT * FROM events WHERE event_type='login'
+AND payload->>'status'='failed'
+AND payload->>'country'='IN' LIMIT 50;
+```
+
+### Semantic Search
+Different from NL search — finds events by *meaning* not keywords.
+`"user had trouble logging in"` → finds `status: failed` events
+because their vector representations are mathematically similar.
+
+### RAG Pipeline
+1. **Retrieve** — question embedded → top-10 similar events via `<=>` cosine distance
+2. **Augment** — retrieved events formatted as structured context
+3. **Generate** — Gemini answers from context only → zero hallucination
+
+### Anomaly Detection
+IsolationForest trained on your events. Features extracted from JSONB:
+`event_type`, `status`, `country`, `device`, `amount`, `duration_ms`
+Every new event auto-scored on insert. No API cost — runs locally.
+
+Anomaly classification uses the model's own `decision_function()` (anomaly
+if score < 0) rather than a fixed score cutoff. `IsolationForest`'s raw
+`score_samples()` output shifts depending on the training data's size and
+spread, so a hardcoded threshold can end up flagging everything or nothing
+depending on the dataset. `decision_function()` self-adjusts based on the
+configured `contamination` rate (currently 0.1), giving a stable boundary
+regardless of dataset shape.
+
+### Change-Aware Updates (CDC + Embedding Efficiency)
+`PUT /events/{id}` only re-embeds (Gemini call) and re-runs anomaly scoring
+when `event_type` or `payload` genuinely changed — a request that resends
+identical data is detected as a no-op and skips both the Gemini call and the
+database write entirely. On the database side, the CDC trigger independently
+compares old vs. new row content (excluding the auto-updating `updated_at`/
+`created_at` timestamp columns) before deciding whether to log an audit row,
+so even an update that does write to the row won't create audit noise unless
+something meaningful actually changed.
+
+---
+
+## 🔌 All Endpoints
+
+### Auth
+| Method | Path | Rate Limit | Description |
+|--------|------|-----------|-------------|
+| POST | `/auth/register` | 5/min | Create account |
+| POST | `/auth/login` | 10/min | Get JWT token |
+| GET | `/auth/me` | 30/min | Current user info |
+
+### Events — CRUD
+| Method | Path | Rate Limit | Description |
+|--------|------|-----------|-------------|
+| POST | `/events/` | 10/min | Log event (httpx enriched + embedded + anomaly scored) |
+| GET | `/events/` | 30/min | List your events (filter by type, country, is_anomaly) |
+| GET | `/events/{id}` | 30/min | Get single event |
+| PUT | `/events/{id}` | 10/min | Update event — re-embeds and re-scores **only if** `event_type` or `payload` actually changed; a no-op update is a no-op write (no DB update, no audit row, no Gemini call) |
+| DELETE | `/events/{id}` | 5/min | Delete event (CDC logs deletion) |
+
+### Events — AI
+| Method | Path | Rate Limit | Description |
+|--------|------|-----------|-------------|
+| POST | `/events/ai/search` | 10/min | Natural language → SQL → results via Gemini |
+| POST | `/events/ai/summary` | 5/min | Plain English summary of your events |
+| POST | `/events/ai/semantic` | 10/min | Semantic search via pgvector cosine similarity |
+| POST | `/events/ai/anomaly/train` | 5/min | Train IsolationForest on your events |
+| GET | `/events/ai/anomaly/scan` | 5/min | Score + flag all existing events |
+| POST | `/events/ai/ask` | 5/min | RAG — grounded Q&A from your real event data |
+
+### Audit / CDC
+| Method | Path | Rate Limit | Description |
+|--------|------|-----------|-------------|
+| GET | `/audit/` | 20/min | Full CDC audit trail |
+| GET | `/audit/event/{id}` | 20/min | CDC history for one event |
+
+### Health
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check (rate limit exempt) |
+| GET | `/` | API info + docs links |
+
+---
+
+
 ## 🚀 Quick Start
 
 ### 1. Clone and install
@@ -242,149 +384,6 @@ alembic -x db=test upgrade head
 
 ---
 
-## 📁 Project Structure
-
-```
-activity_tracker/
-├── main.py                          # App entry, lifespan, rate limiter
-├── config.py                        # Centralized, validated settings (pydantic-settings)
-├── database.py                      # SQLAlchemy engine + get_db
-├── database_async.py                # asyncpg pool + get_async_conn
-│
-├── models/
-│   ├── user.py                      # User ORM model
-│   ├── event.py                     # Event model (JSONB + vector + anomaly)
-│   └── audit.py                     # EventAudit CDC model
-│
-├── schemas/
-│   ├── auth.py                      # Register/login/token schemas
-│   ├── event.py                     # Event + all AI request/response schemas
-│   └── audit.py                     # Audit response schema
-│
-├── routers/
-│   ├── auth.py                      # POST /auth/register, login, GET /auth/me
-│   ├── events.py                    # All event CRUD + 5 AI endpoints
-│   └── audit.py                     # CDC audit trail endpoints
-│
-├── services/
-│   ├── auth_service.py              # bcrypt, JWT encode/decode, get_current_user
-│   ├── ai_service.py                # Gemini NL search, summary, embeddings, RAG
-│   ├── enrichment.py                # httpx external API enrichment
-│   └── anomaly_service.py           # IsolationForest, feature extraction, joblib
-│
-├── alembic/
-│   └── versions/
-│       ├── 001_initial_tables.py            # events + events_audit + CDC trigger
-│       ├── 002_add_users_table.py           # users table + owner_id FK
-│       ├── 003_add_embedding_column.py      # vector(3072) column
-│       ├── 004_add_anomaly_columns.py       # anomaly_score + is_anomaly
-│       ├── 005_optimize_audit_trigger.py    # skip no-op UPDATE logging (first attempt)
-│       └── 006_fix_trigger_exclude_updated_at.py  # exclude updated_at/created_at from no-op check
-│
-├── tests/
-│   ├── conftest.py                  # Fixtures, mocks, shared test client
-│   ├── test_auth.py                 # Auth flow tests
-│   ├── test_events.py               # Event CRUD tests
-│   ├── test_audit.py                # CDC audit trail tests
-│   ├── test_ai.py                   # AI endpoint tests
-│   └── test_security.py             # JWT + ownership scoping tests
-│
-├── test_integration_ai.py           # Real-API integration tests (not mocked, run manually)
-│
-└── migrations/
-    └── init.sql                     # Human-readable schema reference
-```
-
----
-
-## 🔌 All Endpoints
-
-### Auth
-| Method | Path | Rate Limit | Description |
-|--------|------|-----------|-------------|
-| POST | `/auth/register` | 5/min | Create account |
-| POST | `/auth/login` | 10/min | Get JWT token |
-| GET | `/auth/me` | 30/min | Current user info |
-
-### Events — CRUD
-| Method | Path | Rate Limit | Description |
-|--------|------|-----------|-------------|
-| POST | `/events/` | 10/min | Log event (httpx enriched + embedded + anomaly scored) |
-| GET | `/events/` | 30/min | List your events (filter by type, country, is_anomaly) |
-| GET | `/events/{id}` | 30/min | Get single event |
-| PUT | `/events/{id}` | 10/min | Update event — re-embeds and re-scores **only if** `event_type` or `payload` actually changed; a no-op update is a no-op write (no DB update, no audit row, no Gemini call) |
-| DELETE | `/events/{id}` | 5/min | Delete event (CDC logs deletion) |
-
-### Events — AI
-| Method | Path | Rate Limit | Description |
-|--------|------|-----------|-------------|
-| POST | `/events/ai/search` | 10/min | Natural language → SQL → results via Gemini |
-| POST | `/events/ai/summary` | 5/min | Plain English summary of your events |
-| POST | `/events/ai/semantic` | 10/min | Semantic search via pgvector cosine similarity |
-| POST | `/events/ai/anomaly/train` | 5/min | Train IsolationForest on your events |
-| GET | `/events/ai/anomaly/scan` | 5/min | Score + flag all existing events |
-| POST | `/events/ai/ask` | 5/min | RAG — grounded Q&A from your real event data |
-
-### Audit / CDC
-| Method | Path | Rate Limit | Description |
-|--------|------|-----------|-------------|
-| GET | `/audit/` | 20/min | Full CDC audit trail |
-| GET | `/audit/event/{id}` | 20/min | CDC history for one event |
-
-### Health
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check (rate limit exempt) |
-| GET | `/` | API info + docs links |
-
----
-
----
-
-## 🔍 How The AI Features Work
-
-### Natural Language Search
-User asks `"show me failed logins from India"` → Gemini converts it to:
-```sql
-SELECT * FROM events WHERE event_type='login'
-AND payload->>'status'='failed'
-AND payload->>'country'='IN' LIMIT 50;
-```
-
-### Semantic Search
-Different from NL search — finds events by *meaning* not keywords.
-`"user had trouble logging in"` → finds `status: failed` events
-because their vector representations are mathematically similar.
-
-### RAG Pipeline
-1. **Retrieve** — question embedded → top-10 similar events via `<=>` cosine distance
-2. **Augment** — retrieved events formatted as structured context
-3. **Generate** — Gemini answers from context only → zero hallucination
-
-### Anomaly Detection
-IsolationForest trained on your events. Features extracted from JSONB:
-`event_type`, `status`, `country`, `device`, `amount`, `duration_ms`
-Every new event auto-scored on insert. No API cost — runs locally.
-
-Anomaly classification uses the model's own `decision_function()` (anomaly
-if score < 0) rather than a fixed score cutoff. `IsolationForest`'s raw
-`score_samples()` output shifts depending on the training data's size and
-spread, so a hardcoded threshold can end up flagging everything or nothing
-depending on the dataset. `decision_function()` self-adjusts based on the
-configured `contamination` rate (currently 0.1), giving a stable boundary
-regardless of dataset shape.
-
-### Change-Aware Updates (CDC + Embedding Efficiency)
-`PUT /events/{id}` only re-embeds (Gemini call) and re-runs anomaly scoring
-when `event_type` or `payload` genuinely changed — a request that resends
-identical data is detected as a no-op and skips both the Gemini call and the
-database write entirely. On the database side, the CDC trigger independently
-compares old vs. new row content (excluding the auto-updating `updated_at`/
-`created_at` timestamp columns) before deciding whether to log an audit row,
-so even an update that does write to the row won't create audit noise unless
-something meaningful actually changed.
-
----
 
 ## ⚠️ Known Limitations
 
