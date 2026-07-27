@@ -1,4 +1,4 @@
-# 🎯 Activity Tracker API
+# Activity Tracker API
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
@@ -8,14 +8,17 @@
 ![pytest](https://img.shields.io/badge/pytest-53_passing-brightgreen?logo=pytest&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-> A production-style AI-powered backend built with FastAPI, PostgreSQL, pgvector, and Google Gemini.
->*Built with 100% free AI — Gemini Flash, Gemini Embeddings, scikit-learn. No paid API required.*
+> A production-style AI-powered backend built with FastAPI, PostgreSQL, pgvector, and Google Gemini. Built with 100% free AI — Gemini Flash, Gemini Embeddings, scikit-learn. No paid API required.
 
-## 💬 Introduction
+## Introduction
 
-> *"I built a production-style activity tracking API with JWT auth, CDC audit trails via PostgreSQL triggers, flexible JSONB event storage, and a hybrid asyncpg+SQLAlchemy architecture. On top of that I added five AI features: natural language search using Gemini to convert questions to SQL, semantic search with pgvector and Gemini embeddings for meaning-based retrieval, automatic anomaly detection using IsolationForest on every insert, and a full RAG pipeline where user questions are answered by retrieving the most relevant events via cosine similarity and grounding Gemini responses in real data. Configuration is centralized through pydantic-settings with required fields for secrets, so the app fails loudly at startup rather than silently running with an insecure default. Updates are change-aware end to end — the API layer skips re-embedding when nothing actually changed, and the database trigger independently avoids logging no-op audit rows by excluding metadata timestamps from its comparison. The project is covered by a 53-test pytest suite with mocked Gemini calls, plus a separate real-API integration suite that caught and verified the fix for an anomaly-detection threshold bug I found during manual testing. Everything runs on PostgreSQL with zero external vector databases. All AI is free — Gemini Flash, Gemini Embeddings, and scikit-learn."*
+- Production-style activity tracking API — FastAPI, JWT auth, PostgreSQL CDC audit trails, flexible JSONB event storage, and a hybrid asyncpg+SQLAlchemy architecture.
+- Five AI features on top: Gemini-powered natural language to SQL search, pgvector semantic search, automatic IsolationForest anomaly detection, and a full RAG pipeline grounding answers in real event data with zero hallucination.
+- Configuration centralized via pydantic-settings (fails loudly instead of an insecure default), updates are change-aware end to end (skips no-op re-embedding and audit logging), and the project is covered by a 53-test mocked suite plus real-API integration suites — one of which caught and verified the fix for a real anomaly-detection threshold bug found during manual testing.
 
-## 🏛️ Architecture
+---
+
+## Architecture
 
 ```
                 ┌─────────────────────────────────┐
@@ -47,7 +50,10 @@
         GEMINI_API_KEY / DATABASE_URL — imported by every service above
 ```
 
-A FastAPI project demonstrating:
+---
+
+## A FastAPI Project Demonstrating
+
 - **JSONB** — flexible event payloads in PostgreSQL
 - **CDC** — automatic audit trail via PostgreSQL triggers, optimized to skip no-op updates
 - **Alembic** — versioned schema migrations
@@ -63,11 +69,11 @@ A FastAPI project demonstrating:
 
 ---
 
-## ⚡ What This Project Does — At A Glance
+## What This Project Does — At A Glance
 
 This is a **user activity tracking API** where authenticated users log events (logins, purchases, page views) with flexible JSON payloads. Every change is automatically audited. The data powers **5 AI features** built on top of the same PostgreSQL database.
 
-### 🧠 AI Capabilities (The Interesting Part)
+### AI Capabilities
 
 | Feature | Endpoint | What It Does |
 |---------|----------|--------------|
@@ -77,7 +83,7 @@ This is a **user activity tracking API** where authenticated users log events (l
 | **Anomaly Detection** | `GET /events/ai/anomaly/scan` | IsolationForest ML model flags suspicious events automatically on every insert |
 | **RAG Pipeline** | `POST /events/ai/ask` | Ask anything about your data — Gemini answers from *your real events only*, no hallucination |
 
-### 🏗️ Core Infrastructure
+### Core Infrastructure
 
 | Feature | Technology | What It Does |
 |---------|-----------|--------------|
@@ -93,7 +99,7 @@ This is a **user activity tracking API** where authenticated users log events (l
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 activity_tracker/
@@ -140,14 +146,16 @@ activity_tracker/
 │   ├── test_ai.py                   # AI endpoint tests
 │   └── test_security.py             # JWT + ownership scoping tests
 │
-├── test_integration_ai.py           # Real-API integration tests (not mocked, run manually)
+├── test_integration_ai.py           # Real-API integration tests — Gemini + anomaly (not mocked, run manually)
+├── test_integration_update_audit.py # Real-API integration tests — update no-op + audit trigger (not mocked, run manually)
 │
 └── migrations/
     └── init.sql                     # Human-readable schema reference
 ```
 
+---
 
-## 🔍 How The AI Features Work
+## How The AI Features Work
 
 ### Natural Language Search
 User asks `"show me failed logins from India"` → Gemini converts it to:
@@ -192,7 +200,7 @@ something meaningful actually changed.
 
 ---
 
-## 🔌 All Endpoints
+## All Endpoints
 
 ### Auth
 | Method | Path | Rate Limit | Description |
@@ -234,8 +242,7 @@ something meaningful actually changed.
 
 ---
 
-
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Clone and install
 ```bash
@@ -257,10 +264,9 @@ ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 ```
 All five values are loaded once, validated, and exposed through a single `Settings`
-object in `config.py` (see [Configuration Management](#-configuration-management)
-below). `SECRET_KEY` and `GEMINI_API_KEY` are **required** — the app will refuse to
-start with a clear error if either is missing, rather than silently falling back to
-an insecure default.
+object in `config.py` (see Configuration Management below). `SECRET_KEY` and
+`GEMINI_API_KEY` are **required** — the app will refuse to start with a clear
+error if either is missing, rather than silently falling back to an insecure default.
 
 ### 3. Set up PostgreSQL
 ```bash
@@ -278,7 +284,7 @@ Open **http://localhost:8000/docs** — Swagger UI with all endpoints.
 
 ---
 
-## 🔐 Configuration Management
+## Configuration Management
 
 All environment-driven settings — the JWT secret, token expiry, the Gemini API key,
 and the database URL — are defined once in a single `config.py` at the project root,
@@ -308,7 +314,7 @@ value now fails loudly at startup instead of silently running with an insecure d
 
 ---
 
-## 🧪 Testing
+## Testing
 
 ### Setup test database (one-time)
 ```bash
@@ -354,39 +360,56 @@ pytest --cov=. --cov-report=html
 | `test_ai.py` | 10 | NL search, summary, anomaly detection, non-SELECT SQL blocking, health |
 | `test_security.py` | 6 | JWT expiry, no-token rejection, owner_id data scoping |
 
+<details>
+<summary><b>What is mocked, integration tests, and CDC trigger coverage</b></summary>
+
 ### What is mocked in tests
 - **Gemini API** — `genai.embed_content()` and `model.generate_content()` are mocked with session-scoped fixtures so tests never hit the real API
 - **httpx enrichment** — external API call is mocked to return a 200 response
 - **asyncpg pool** — mocked so tests don't need a live asyncpg connection
 
-### Integration tests (real Gemini, real anomaly model)
+### Integration tests (real Gemini, real anomaly model, real audit trigger)
 The 53-test suite above is fully mocked — it verifies code logic, not whether
-Gemini or the trained anomaly model actually behave sanely against real data.
-`test_integration_ai.py` (project root) fills that gap: it hits a live running
-server with real HTTP calls, registers a throwaway user, creates real events,
-and checks:
-- Gemini summary/RAG endpoints return real, non-empty, data-grounded answers
-- Anomaly detection is *selective* — not everything gets flagged, and a
-  deliberately planted suspicious event is correctly caught
+Gemini, the trained anomaly model, or the live PostgreSQL trigger actually
+behave sanely against real data. Two integration test files fill that gap by
+hitting a live running server with real HTTP calls, using a throwaway test user:
 
-This test is **not** run by plain `pytest` (it needs a live server and makes
-real API calls, so it's excluded from routine/CI runs). Run it manually
-before a demo or deploy:
+- **`test_integration_ai.py`** — creates real events and checks Gemini
+  summary/RAG endpoints return real, non-empty, data-grounded answers, and
+  that anomaly detection is *selective* (not everything gets flagged, and a
+  deliberately planted suspicious event is correctly caught).
+- **`test_integration_update_audit.py`** — verifies the change-aware update
+  behavior end to end: a no-op `PUT` (same `event_type`/`payload`) leaves
+  `anomaly_score` and `updated_at` completely unchanged (no Gemini call, no
+  DB write), a genuine change updates both, and the live audit trail via
+  `GET /audit/event/{id}` shows exactly one `INSERT` and one `UPDATE` —
+  never a row for the no-op update.
+
+Neither test is run by plain `pytest` (both need a live server and make real
+API/DB calls, so they're excluded from routine/CI runs). Run the full check
+manually before a demo or deploy:
 ```bash
-uvicorn main:app --reload        # start the server first, in one terminal
-pytest test_integration_ai.py -v # in a second terminal
+pytest -v                                   # 1. mocked suite — no server needed
+
+uvicorn main:app --reload                   # 2. start the server, in one terminal
+
+pytest test_integration_ai.py -v            # 3. real Gemini + anomaly checks
+pytest test_integration_update_audit.py -v  # 4. real update/audit no-op checks
 ```
 
-### Known test limitation — CDC triggers
-The test database is set up using SQLAlchemy's `Base.metadata.create_all()` which creates tables from ORM models but does **not** install PostgreSQL trigger functions. CDC audit trail tests (INSERT/UPDATE/DELETE trigger firing) are verified manually via Swagger. To enable CDC trigger tests in CI, run Alembic migrations against the test database:
+### CDC triggers — automated coverage
+The mocked test database is set up using SQLAlchemy's `Base.metadata.create_all()`, which creates tables from ORM models but does **not** install PostgreSQL trigger functions — so the mocked `test_audit.py` suite verifies the API layer only, not real trigger firing. That gap is covered instead by `test_integration_update_audit.py` above, which runs against the real trigger on the real database. To also enable trigger-aware tests inside the mocked suite itself, run Alembic migrations against the test database instead of `create_all()`:
 ```bash
 alembic -x db=test upgrade head
 ```
 
+</details>
+
 ---
 
+<details>
+<summary><h2 style="display:inline">Known Limitations</h2></summary>
 
-## ⚠️ Known Limitations
 
 ### 1. pgvector Index — 2000 Dimension Limit
 pgvector's ANN indexes (HNSW and IVFFlat) both have a hard limit of **2000 dimensions**. The current Gemini embedding model (`gemini-embedding-001`) produces **3072-dimension** vectors by default, which exceeds this limit. As a result, no vector index is created — the API uses **exact cosine similarity search** (sequential scan).
@@ -395,12 +418,8 @@ pgvector's ANN indexes (HNSW and IVFFlat) both have a hard limit of **2000 dimen
 - Using `output_dimensionality=768` with Matryoshka-capable models to stay within the 2000-dim limit
 - Switching to a dedicated vector database (Pinecone, Weaviate) for millions of vectors
 
-### 2. CDC Triggers Not Installed on Test Database
-The test suite uses `Base.metadata.create_all()` to set up the test database, which creates tables from SQLAlchemy ORM models but does **not** run Alembic migrations or install PostgreSQL trigger functions. The CDC audit trigger (`trg_audit_events`) is not present on the test database.
-
-**Impact:** CDC trigger behaviour (auto-logging INSERT/UPDATE/DELETE) is verified manually via Swagger UI, not via automated tests. The audit endpoint tests verify the API layer only.
-
-**Fix for CI:** Run `alembic upgrade head` against the test database instead of using `create_all()`.
+### 2. ~~CDC Triggers Not Installed on Test Database~~ — Covered by integration tests
+The mocked test suite uses `Base.metadata.create_all()`, which does **not** install PostgreSQL trigger functions, so trigger behavior isn't exercised by the mocked `test_audit.py` suite. This is now covered by `test_integration_update_audit.py`, which runs against the real trigger on the real database. To also enable trigger-aware tests inside the mocked suite, run `alembic -x db=test upgrade head` instead of `create_all()`.
 
 ### 3. ~~Fixed Anomaly Score Threshold~~ — Fixed
 Earlier versions compared `IsolationForest.score_samples()` against a
@@ -430,7 +449,7 @@ insecure default string if left unset. Fixed by introducing a single
 type-validated, and shared via one `settings` object. `SECRET_KEY` and
 `GEMINI_API_KEY` are required fields with no fallback, so a missing value
 now fails loudly at startup instead of running silently with an insecure
-default. See [Configuration Management](#-configuration-management) above.
+default. See Configuration Management above.
 
 ### 7. ~~Audit Trigger Logged No-Op Updates~~ — Fixed (two-part fix)
 Migration 005's first attempt at skipping no-op UPDATE logging
@@ -446,9 +465,13 @@ this. Fixed at two levels: migration 006 rewrote the trigger to exclude
 merged result is genuinely different — preventing SQLAlchemy from marking
 the row dirty (and therefore issuing an UPDATE at all) for a true no-op.
 
+</details>
+
 ---
 
-## 🛠️ Tech Stack
+<details>
+<summary><h2 style="display:inline">Tech Stack</h2></summary>
+
 
 ```
 FastAPI           — API framework
@@ -470,22 +493,30 @@ pydantic-settings — Centralized, validated environment configuration
 pytest            — 53-test suite (auth, CRUD, AI, security)
 ```
 
----
+</details>
 
 ---
 
-## 📋 Quick Commands
+## Quick Commands
 
 ```bash
-uvicorn main:app --reload        # Start server
-alembic upgrade head             # Apply all migrations
-alembic downgrade -1             # Rollback one migration
-alembic history --verbose        # See migration history
-pytest                           # Run full test suite (53 tests)
-pytest -v                        # Verbose test output
-pytest test_integration_ai.py -v # Real-API integration tests (server must be running)
-pytest --cov=. --cov-report=html # Test coverage report
+uvicorn main:app --reload                   # Start server
+alembic upgrade head                        # Apply all migrations
+alembic downgrade -1                        # Rollback one migration
+alembic history --verbose                   # See migration history
+pytest                                      # Run full test suite (53 tests)
+pytest -v                                   # Verbose test output
+pytest test_integration_ai.py -v            # Real-API: Gemini + anomaly (server must be running)
+pytest test_integration_update_audit.py -v  # Real-API: update no-op + audit trigger (server must be running)
+pytest --cov=. --cov-report=html            # Test coverage report
 ```
 
 ---
 
+## Author
+
+Sourabh Sagar
+Lucknow, Uttar Pradesh, India
+github.com/sgr111 · sgrsourabh111@gmail.com
+
+Built as part of a self-taught transition into Backend Development / QA Automation (SDET) roles.
