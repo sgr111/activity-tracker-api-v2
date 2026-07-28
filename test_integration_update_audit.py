@@ -23,7 +23,7 @@ BASE_URL = "http://127.0.0.1:8000"
 
 # httpx defaults to a 5s timeout — event creation chains an enrichment call,
 # a Gemini embedding call, and anomaly scoring, which can easily exceed that.
-TIMEOUT = 30.0
+TIMEOUT = 30.0 # timeout is taken 30 seconds to allow for the enrichment and scoring calls to complete
 
 TEST_EMAIL    = f"integration_update_test_{int(time.time())}@example.com"
 TEST_PASSWORD = "testpassword123"

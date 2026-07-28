@@ -21,9 +21,9 @@ async def create_pool():
 
 async def close_pool():
     """Close the asyncpg connection pool. Called at app shutdown."""
-    global pool
+    global pool # it provides access to the global variable `pool` so we can modify it within this function.
     if pool:
-        await pool.close()
+        await pool.close() 
         pool = None
 
 
