@@ -136,10 +136,14 @@ async def update_event(
         event.event_type = body.event_type
 
     if body.payload is not None:
-        merged_payload = {**event.payload, **body.payload}
+        merged_payload = {**event.payload, **body.payload} # {**old, **new}
+        # event.payload pehle spread hota hai (baseline/old data)
+        # body.payload uske bad spread hota hai (new data) — new data overwrites old.
+        #isliye agar dono mein same key ho (jaise status), to body.payload wali value will win
         if merged_payload != event.payload:
             content_changed = True
             event.payload = merged_payload
+        # "old sab rakho, lekin jahan new mein value di gayi hai, wahan new jeetegi."
 
     if content_changed:
         # Only hits Gemini (embedding) and re-runs anomaly scoring when the
