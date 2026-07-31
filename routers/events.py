@@ -127,8 +127,8 @@ async def update_event(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    # Track whether anything that affects the embedding actually changed,
-    # BEFORE mutating event.event_type / event.payload below.
+    # Track whether anything that affects the embedding actually changed,-
+    # - BEFORE mutating event.event_type / event.payload below.
     content_changed = False
 
     if body.event_type is not None and body.event_type != event.event_type:
