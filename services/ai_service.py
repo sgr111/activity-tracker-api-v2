@@ -2,6 +2,7 @@ import json
 import google.generativeai as genai
 
 from config import settings
+from local_cache import cache_get, cache_set, nl_search_key, summary_key
 
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
@@ -71,7 +72,13 @@ def event_to_text(event_type: str, payload: dict) -> str:
 
 # ── NL to SQL ──────────────────────────────────────────────
 async def natural_language_to_sql(question: str) -> str:
-    """Convert plain English to PostgreSQL SELECT via Gemini."""
+    """Convert plain English to PostgreSQL SELECT via Gemini. Cached — same
+    question never re-hits Gemini within the TTL window."""
+    cache_key = nl_search_key(question)
+    cached    = await cache_get(cache_key)
+    if cached:
+        return cached["sql"]
+
     prompt = f"""{DB_SCHEMA}
 
 Convert this question into a valid PostgreSQL SELECT query:
@@ -87,21 +94,42 @@ Return only the raw SQL. No explanation. No markdown. No backticks."""
     if first_word != "SELECT":
         raise ValueError(f"Gemini returned a non-SELECT query: {first_word}")
 
+    await cache_set(cache_key, {"sql": sql}, ttl_seconds=3600)
     return sql
 
 
 # ── Event summarisation ────────────────────────────────────
 async def summarise_events(events: list[dict]) -> str:
-    """Use Gemini to produce a plain-English summary of events."""
+    """Use Gemini to produce a plain-English summary of events. Cached per
+    exact event-set (auto-invalidates the moment the set changes) and sends
+    only the fields Gemini actually needs — not the full raw JSON."""
     if not events:
         return "No events found to summarise."
 
-    events_json = json.dumps(events, indent=2, default=str)
+    event_ids = [e["id"] for e in events if "id" in e]
+    cache_key = summary_key(event_ids, len(events)) if event_ids else None
+    if cache_key:
+        cached = await cache_get(cache_key)
+        if cached:
+            return cached["summary"]
+
+    # Shrunk, line-per-event format instead of full json.dumps(indent=2).
+    # Drops id and full ISO timestamp — Gemini needs the content, not the
+    # bookkeeping — cutting prompt tokens noticeably on larger batches.
+    lines = []
+    for e in events:
+        payload = e.get("payload", {}) or {}
+        fields  = " ".join(
+            f"{k}={v}" for k, v in payload.items()
+            if k not in ("enriched", "enrichment_source", "enrichment_error")
+        )
+        lines.append(f"type={e.get('event_type')} {fields}")
+    events_text = "\n".join(lines)
 
     prompt = f"""You are an analyst reviewing user activity logs for a web application.
 
 Here are the recent events:
-{events_json}
+{events_text}
 
 Write a concise plain-English summary (3-5 sentences) covering:
 - What types of activities happened
@@ -112,7 +140,11 @@ Write a concise plain-English summary (3-5 sentences) covering:
 Be direct and specific. Use numbers where possible."""
 
     response = model.generate_content(prompt)
-    return response.text.strip()
+    summary  = response.text.strip()
+
+    if cache_key:
+        await cache_set(cache_key, {"summary": summary}, ttl_seconds=3600)
+    return summary
 
 
 # ── RAG Pipeline ───────────────────────────────────────────
