@@ -65,6 +65,7 @@
 - **IsolationForest** — automatic anomaly detection on every insert
 - **RAG Pipeline** — grounded Q&A from your real event data, zero hallucination
 - **Centralized Config** — validated settings via `pydantic-settings`, no scattered `os.getenv()`
+- **In-Memory Caching** — LRU+TTL cache on NL-to-SQL and summarisation endpoints; same question never re-hits Gemini within the TTL window, with automatic invalidation on data changes
 - **pytest** — 53-test suite covering auth, CRUD, AI endpoints, and security
 
 ---
@@ -125,7 +126,8 @@ activity_tracker/
 │
 ├── services/
 │   ├── auth_service.py              # bcrypt, JWT encode/decode, get_current_user
-│   ├── ai_service.py                # Gemini NL search, summary, embeddings, RAG
+│   ├── ai_service.py                # Gemini NL search, summary, embeddings, RAG (cache-aware)
+│   ├── local_cache.py               # In-memory LRU+TTL cache — same interface as Upstash version for easy swap
 │   ├── enrichment.py                # httpx external API enrichment
 │   └── anomaly_service.py           # IsolationForest, feature extraction, joblib
 │
@@ -148,6 +150,7 @@ activity_tracker/
 │
 ├── test_integration_ai.py           # Real-API integration tests — Gemini + anomaly (not mocked, run manually)
 ├── test_integration_update_audit.py # Real-API integration tests — update no-op + audit trigger (not mocked, run manually)
+├── test_integration_cache.py        # Real-API integration tests — cache hit speed + auto-invalidation (not mocked, run manually)
 │
 └── migrations/
     └── init.sql                     # Human-readable schema reference
@@ -197,6 +200,26 @@ compares old vs. new row content (excluding the auto-updating `updated_at`/
 `created_at` timestamp columns) before deciding whether to log an audit row,
 so even an update that does write to the row won't create audit noise unless
 something meaningful actually changed.
+
+### In-Memory Caching (Gemini Quota Conservation)
+`natural_language_to_sql()` and `summarise_events()` both check an in-process
+LRU+TTL cache (`local_cache.py`) before calling Gemini — the same natural-language
+question or the same event set never triggers a second real API call within the
+TTL window. Cache keys are designed for automatic invalidation: the summary key
+is derived from the sorted list of event IDs currently in scope, so adding or
+deleting any event silently changes the key and forces a fresh Gemini call on the
+next request, preventing stale summaries without any manual invalidation logic.
+The prompt sent to Gemini for summarisation was also shrunk — the earlier
+`json.dumps(events, indent=2)` format included `id`, full ISO timestamps, and
+enrichment metadata that Gemini doesn't use; replaced with a compact per-event
+line (`type=login status=success country=IN device=mobile`) that sends the same
+meaningful content in significantly fewer tokens.
+The cache is implemented as a plain `OrderedDict` with per-entry TTL — no
+external service, no network round-trip. A parallel Upstash Redis version
+(`cache_service.py`) was also drafted with the same function interface
+(`cache_get`, `cache_set`, `nl_search_key`, `summary_key`), so switching between
+the two is a single import-line change in `ai_service.py` when the project scales
+to multiple workers or needs cache persistence across restarts.
 
 ---
 
@@ -395,6 +418,7 @@ uvicorn main:app --reload                   # 2. start the server, in one termin
 
 pytest test_integration_ai.py -v            # 3. real Gemini + anomaly checks
 pytest test_integration_update_audit.py -v  # 4. real update/audit no-op checks
+pytest test_integration_cache.py -v         # 5. real cache hit speed + auto-invalidation checks
 ```
 
 ### CDC triggers — automated coverage
@@ -465,6 +489,16 @@ this. Fixed at two levels: migration 006 rewrote the trigger to exclude
 merged result is genuinely different — preventing SQLAlchemy from marking
 the row dirty (and therefore issuing an UPDATE at all) for a true no-op.
 
+### 8. In-Memory Cache — Wiped on Restart, Not Shared Across Workers
+`local_cache.py` stores cached Gemini responses in a plain `OrderedDict` in
+the current process's RAM. This means the cache is lost on every server
+restart (including `--reload` auto-restarts during development) and is not
+shared if the app ever runs with multiple uvicorn workers. Both limitations
+are acceptable at current single-worker, portfolio scale — and a parallel
+`cache_service.py` (Upstash Redis REST, fail-open) was drafted with an
+identical function interface, so upgrading is a one-line import swap in
+`ai_service.py` when the project outgrows the in-memory approach.
+
 </details>
 
 ---
@@ -490,6 +524,7 @@ Gemini Embeddings — 3072-dim event vectors
 scikit-learn      — IsolationForest anomaly detection
 joblib            — ML model serialisation
 pydantic-settings — Centralized, validated environment configuration
+local_cache       — In-memory LRU+TTL cache (OrderedDict); Upstash Redis version also drafted for easy swap
 pytest            — 53-test suite (auth, CRUD, AI, security)
 ```
 
@@ -508,6 +543,7 @@ pytest                                      # Run full test suite (53 tests)
 pytest -v                                   # Verbose test output
 pytest test_integration_ai.py -v            # Real-API: Gemini + anomaly (server must be running)
 pytest test_integration_update_audit.py -v  # Real-API: update no-op + audit trigger (server must be running)
+pytest test_integration_cache.py -v         # Real-API: cache hit speed + auto-invalidation (server must be running)
 pytest --cov=. --cov-report=html            # Test coverage report
 ```
 
