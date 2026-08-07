@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 import os
 
 TEST_DATABASE_URL = "postgresql://postgres:password@localhost:5432/activity_tracker_test"
@@ -16,6 +16,15 @@ os.environ["ACCESS_TOKEN_EXPIRE_MINUTES"] = "30"
 from database import Base, get_db
 import models  # noqa
 from main import app
+
+# LangChain classes to mock at — NOT services.ai_service.model / .genai
+# anymore (those were removed in the LangChain refactor). Patching the
+# CLASS method (not an instance) means every ChatGoogleGenerativeAI /
+# GoogleGenerativeAIEmbeddings instance is mocked, regardless of when it
+# was constructed (module import time vs. inside a test) — chains built
+# at import time in ai_service.py still pick up the patch correctly.
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_core.messages import AIMessage
 
 engine      = create_engine(TEST_DATABASE_URL, echo=False)
 TestSession = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -39,14 +48,15 @@ def setup_database():
 # ── Session-scoped mocks — active for entire test session ──
 @pytest.fixture(scope="session", autouse=True)
 def mock_gemini_session():
-    """Mock Gemini at session scope so shared fixtures can call POST /events/."""
-    with patch("services.ai_service.model") as mock_model, \
-         patch("services.ai_service.genai.embed_content") as mock_embed:
-        mock_response      = MagicMock()
-        mock_response.text = "SELECT * FROM events LIMIT 50;"
-        mock_model.generate_content.return_value = mock_response
-        mock_embed.return_value = {"embedding": [0.0] * 3072}
-        yield mock_model, mock_embed
+    """Mock Gemini (via LangChain) at session scope so shared fixtures can
+    call POST /events/. Default: NL-to-SQL-shaped response, since that's
+    what most fixtures trigger indirectly. Override mock_llm.return_value
+    in an individual test to change what "the model says" for that test."""
+    with patch.object(ChatGoogleGenerativeAI, "ainvoke", new_callable=AsyncMock) as mock_llm, \
+         patch.object(GoogleGenerativeAIEmbeddings, "aembed_query", new_callable=AsyncMock) as mock_embed:
+        mock_llm.return_value   = AIMessage(content="SELECT * FROM events LIMIT 50;")
+        mock_embed.return_value = [0.0] * 3072
+        yield mock_llm, mock_embed
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -61,7 +71,6 @@ def mock_httpx_session():
 
 @pytest.fixture(scope="session")
 def client(mock_gemini_session, mock_httpx_session):
-    from unittest.mock import AsyncMock
     app.dependency_overrides[get_db] = override_get_db
     mock_pool = MagicMock()
     mock_conn = MagicMock()
@@ -104,14 +113,17 @@ def auth_headers(auth_token):
 # ── Function-scoped mocks for individual test overrides ────
 @pytest.fixture(autouse=True)
 def mock_gemini():
-    """Function-scoped — lets individual tests override Gemini responses."""
-    with patch("services.ai_service.model") as mock_model, \
-         patch("services.ai_service.genai.embed_content") as mock_embed:
-        mock_response      = MagicMock()
-        mock_response.text = "SELECT * FROM events LIMIT 50;"
-        mock_model.generate_content.return_value = mock_response
-        mock_embed.return_value = {"embedding": [0.0] * 3072}
-        yield mock_model, mock_embed
+    """Function-scoped — lets individual tests override what the model
+    returns, e.g.:
+        def test_something(client, mock_gemini):
+            mock_llm, mock_embed = mock_gemini
+            mock_llm.return_value = AIMessage(content="custom response")
+    """
+    with patch.object(ChatGoogleGenerativeAI, "ainvoke", new_callable=AsyncMock) as mock_llm, \
+         patch.object(GoogleGenerativeAIEmbeddings, "aembed_query", new_callable=AsyncMock) as mock_embed:
+        mock_llm.return_value   = AIMessage(content="SELECT * FROM events LIMIT 50;")
+        mock_embed.return_value = [0.0] * 3072
+        yield mock_llm, mock_embed
 
 
 @pytest.fixture(autouse=True)

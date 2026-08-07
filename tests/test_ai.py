@@ -1,5 +1,8 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, AsyncMock
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import AIMessage
 
 SAMPLE_EVENT = {
     "user_id":    1,
@@ -10,10 +13,8 @@ SAMPLE_EVENT = {
 
 class TestNLSearch:
     def test_nl_search_success(self, client, auth_headers):
-        with patch("services.ai_service.model") as mock_model:
-            mock_response      = MagicMock()
-            mock_response.text = "SELECT * FROM events LIMIT 50"
-            mock_model.generate_content.return_value = mock_response
+        with patch.object(ChatGoogleGenerativeAI, "ainvoke", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = AIMessage(content="SELECT * FROM events LIMIT 50")
             res = client.post("/events/ai/search", json={
                 "question": "show me all failed logins"
             }, headers=auth_headers)
@@ -33,10 +34,8 @@ class TestNLSearch:
         assert res.status_code == 422
 
     def test_nl_search_blocks_non_select(self, client, auth_headers):
-        with patch("services.ai_service.model") as mock_model:
-            mock_response      = MagicMock()
-            mock_response.text = "DELETE FROM events"
-            mock_model.generate_content.return_value = mock_response
+        with patch.object(ChatGoogleGenerativeAI, "ainvoke", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = AIMessage(content="DELETE FROM events")
             res = client.post("/events/ai/search", json={
                 "question": "delete everything"
             }, headers=auth_headers)
@@ -47,10 +46,8 @@ class TestNLSearch:
 class TestSummary:
     def test_summary_success(self, client, auth_headers):
         client.post("/events/", json=SAMPLE_EVENT, headers=auth_headers)
-        with patch("services.ai_service.model") as mock_model:
-            mock_response      = MagicMock()
-            mock_response.text = "User had 1 failed login from India."
-            mock_model.generate_content.return_value = mock_response
+        with patch.object(ChatGoogleGenerativeAI, "ainvoke", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = AIMessage(content="User had 1 failed login from India.")
             res = client.post("/events/ai/summary", json={"limit": 10}, headers=auth_headers)
             assert res.status_code == 200
             assert "summary"     in res.json()

@@ -61,9 +61,9 @@ TABLE: events
   updated_at  TIMESTAMPTZ
 
 JSONB payload examples:
-  login/logout: {"ip": "1.2.3.4", "country": "IN", "device": "mobile", "status": "success"|"failed"}
-  purchase:     {"ip": "1.2.3.4", "country": "US", "amount": 99.99, "item": "Pro Plan"}
-  page_view:    {"ip": "1.2.3.4", "country": "UK", "page": "/dashboard", "duration_ms": 1200}
+  login/logout: {{"ip": "1.2.3.4", "country": "IN", "device": "mobile", "status": "success"|"failed"}}
+  purchase:     {{"ip": "1.2.3.4", "country": "US", "amount": 99.99, "item": "Pro Plan"}}
+  page_view:    {{"ip": "1.2.3.4", "country": "UK", "page": "/dashboard", "duration_ms": 1200}}
 
 TABLE: events_audit
   id          BIGSERIAL PRIMARY KEY
@@ -74,7 +74,7 @@ TABLE: events_audit
 
 Useful JSONB operators:
   payload->>'key'          -- get value as text
-  payload @> '{"k":"v"}'  -- contains check
+  payload @> '{{"k":"v"}}'  -- contains check
   payload ? 'key'          -- key exists
 
 IMPORTANT rules:
@@ -205,8 +205,7 @@ class ExactScanPgVectorRetriever(BaseRetriever):
     user_id: int
     top_k: int = 10
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = {"arbitrary_types_allowed": True}
 
     def _get_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
         raise NotImplementedError(
