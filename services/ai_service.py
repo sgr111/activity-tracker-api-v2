@@ -1,15 +1,50 @@
+"""
+LangChain refactor of the RAG pipeline, NL-to-SQL, and summarization.
+
+Same behavior/output as the pre-refactor version — rewritten with LangChain's
+structured components (chains, prompt templates, a custom retriever) instead
+of hand-written embedding/retrieval/prompt code.
+
+CRITICAL CONSTRAINT (see README "Known Limitations"):
+pgvector's ANN index has a 2000-dimension limit, but Gemini's embeddings are
+3072-dimensional — so this project deliberately uses an exact/sequential
+cosine-similarity scan (`ORDER BY embedding <=> $1`, no ANN index) instead.
+LangChain's default PGVector retriever assumes an ANN index exists. Using it
+here would silently reintroduce a bug that's already been found and fixed
+once. ExactScanPgVectorRetriever below wraps the SAME exact-scan SQL that
+was already in place — it does not use LangChain's PGVector integration.
+
+Scope decision for NL-to-SQL / summarization: both are single Gemini calls
+that don't touch the retriever at all, but they're moved to LangChain
+chains anyway (PromptTemplate | llm | StrOutputParser) for consistency and
+so a later observability wiring pass can attach uniformly to all three.
+"""
+
 import json
-import google.generativeai as genai
+from typing import Any, List
+
+from langchain_core.documents import Document
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.retrievers import BaseRetriever
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
 from config import settings
 from local_cache import cache_get, cache_set, nl_search_key, summary_key
 
-genai.configure(api_key=settings.GEMINI_API_KEY)
-
 # ── Models ─────────────────────────────────────────────────
-model           = genai.GenerativeModel("gemini-2.5-flash")
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 EMBEDDING_DIM   = 3072
+
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    google_api_key=settings.GEMINI_API_KEY,
+)
+
+embeddings = GoogleGenerativeAIEmbeddings(
+    model=EMBEDDING_MODEL,
+    google_api_key=settings.GEMINI_API_KEY,
+)
 
 
 # ── Schema context for NL search ───────────────────────────
@@ -50,27 +85,43 @@ IMPORTANT rules:
 """
 
 
-# ── Embedding helper ───────────────────────────────────────
-async def embed_text(text: str) -> list[float]:
-    """Convert text to 3072-dim vector using Gemini Embeddings."""
-    result = genai.embed_content(
-        model=EMBEDDING_MODEL,
-        content=text,
-        task_type="retrieval_document"
-    )
-    return result["embedding"]
+def _clean_payload(payload: dict) -> dict:
+    return {
+        k: v for k, v in payload.items()
+        if k not in ("enriched", "enrichment_source", "enrichment_error")
+    }
 
 
 def event_to_text(event_type: str, payload: dict) -> str:
     """Convert an event into plain text for embedding."""
     parts = [f"event type: {event_type}"]
-    for key, value in payload.items():
-        if key not in ("enriched", "enrichment_source", "enrichment_error"):
-            parts.append(f"{key}: {value}")
+    for key, value in _clean_payload(payload).items():
+        parts.append(f"{key}: {value}")
     return ", ".join(parts)
 
 
-# ── NL to SQL ──────────────────────────────────────────────
+async def embed_text(text: str) -> list[float]:
+    """Convert text to a 3072-dim vector using Gemini Embeddings — now via
+    LangChain's GoogleGenerativeAIEmbeddings wrapper instead of the raw
+    google.generativeai SDK call. Same model, same output shape; kept as a
+    standalone function since routers/events.py calls this directly on
+    event insert (separate from the retriever's internal embedding calls)."""
+    return await embeddings.aembed_query(text)
+
+
+# ── NL to SQL (LangChain chain) ────────────────────────────
+NL_TO_SQL_PROMPT = ChatPromptTemplate.from_template(
+    DB_SCHEMA
+    + """
+Convert this question into a valid PostgreSQL SELECT query:
+"{question}"
+
+Return only the raw SQL. No explanation. No markdown. No backticks."""
+)
+
+nl_to_sql_chain = NL_TO_SQL_PROMPT | llm | StrOutputParser()
+
+
 async def natural_language_to_sql(question: str) -> str:
     """Convert plain English to PostgreSQL SELECT via Gemini. Cached — same
     question never re-hits Gemini within the TTL window."""
@@ -79,16 +130,9 @@ async def natural_language_to_sql(question: str) -> str:
     if cached:
         return cached["sql"]
 
-    prompt = f"""{DB_SCHEMA}
-
-Convert this question into a valid PostgreSQL SELECT query:
-"{question}"
-
-Return only the raw SQL. No explanation. No markdown. No backticks."""
-
-    response  = model.generate_content(prompt)
-    sql       = response.text.strip()
-    sql       = sql.replace("```sql", "").replace("```", "").strip()
+    sql = await nl_to_sql_chain.ainvoke({"question": question})
+    sql = sql.strip()
+    sql = sql.replace("```sql", "").replace("```", "").strip()
 
     first_word = sql.split()[0].upper() if sql.split() else ""
     if first_word != "SELECT":
@@ -98,7 +142,25 @@ Return only the raw SQL. No explanation. No markdown. No backticks."""
     return sql
 
 
-# ── Event summarisation ────────────────────────────────────
+# ── Event summarisation (LangChain chain) ──────────────────
+SUMMARY_PROMPT = ChatPromptTemplate.from_template(
+    """You are an analyst reviewing user activity logs for a web application.
+
+Here are the recent events:
+{events_text}
+
+Write a concise plain-English summary (3-5 sentences) covering:
+- What types of activities happened
+- Any notable patterns (repeated logins, failed attempts, purchases)
+- Countries or devices involved
+- Anything suspicious or worth flagging
+
+Be direct and specific. Use numbers where possible."""
+)
+
+summary_chain = SUMMARY_PROMPT | llm | StrOutputParser()
+
+
 async def summarise_events(events: list[dict]) -> str:
     """Use Gemini to produce a plain-English summary of events. Cached per
     exact event-set (auto-invalidates the moment the set changes) and sends
@@ -114,104 +176,87 @@ async def summarise_events(events: list[dict]) -> str:
             return cached["summary"]
 
     # Shrunk, line-per-event format instead of full json.dumps(indent=2).
-    # Drops id and full ISO timestamp — Gemini needs the content, not the
-    # bookkeeping — cutting prompt tokens noticeably on larger batches.
     lines = []
     for e in events:
         payload = e.get("payload", {}) or {}
-        fields  = " ".join(
-            f"{k}={v}" for k, v in payload.items()
-            if k not in ("enriched", "enrichment_source", "enrichment_error")
-        )
+        fields  = " ".join(f"{k}={v}" for k, v in _clean_payload(payload).items())
         lines.append(f"type={e.get('event_type')} {fields}")
     events_text = "\n".join(lines)
 
-    prompt = f"""You are an analyst reviewing user activity logs for a web application.
-
-Here are the recent events:
-{events_text}
-
-Write a concise plain-English summary (3-5 sentences) covering:
-- What types of activities happened
-- Any notable patterns (repeated logins, failed attempts, purchases)
-- Countries or devices involved
-- Anything suspicious or worth flagging
-
-Be direct and specific. Use numbers where possible."""
-
-    response = model.generate_content(prompt)
-    summary  = response.text.strip()
+    summary = await summary_chain.ainvoke({"events_text": events_text})
+    summary = summary.strip()
 
     if cache_key:
         await cache_set(cache_key, {"summary": summary}, ttl_seconds=3600)
     return summary
 
 
-# ── RAG Pipeline ───────────────────────────────────────────
-async def rag_answer(
-    question:    str,
-    user_id:     int,
-    async_conn,
-    top_k:       int = 10
-) -> dict:
+# ── Custom retriever: wraps the EXISTING exact-scan pgvector query ──
+class ExactScanPgVectorRetriever(BaseRetriever):
     """
-    Full RAG pipeline:
-    1. RETRIEVE  — embed question, find top-K similar events via pgvector
-    2. AUGMENT   — format retrieved events as structured context
-    3. GENERATE  — send question + context to Gemini, answer from context only
-
-    Returns: {answer, source_events, events_used}
+    Wraps the pre-existing exact/sequential-scan pgvector query as a
+    LangChain BaseRetriever. Deliberately NOT langchain_postgres's
+    PGVector retriever — that assumes an ANN index, which pgvector can't
+    build for 3072-dim vectors (2000-dim limit). Same SQL as before the
+    refactor; only the interface around it changed.
     """
 
-    # ── Step 1: RETRIEVE ──────────────────────────────────
-    query_embedding = await embed_text(question)
-    embedding_str   = "[" + ",".join(str(x) for x in query_embedding) + "]"
+    async_conn: Any
+    user_id: int
+    top_k: int = 10
 
-    sql = """
-        SELECT
-            id, user_id, event_type, payload, created_at,
-            1 - (embedding <=> $1) AS similarity
-        FROM events
-        WHERE owner_id = $2
-          AND embedding IS NOT NULL
-        ORDER BY embedding <=> $1
-        LIMIT $3
-    """
-    rows = await async_conn.fetch(sql, embedding_str, user_id, top_k)
+    class Config:
+        arbitrary_types_allowed = True
 
-    if not rows:
-        return {
-            "answer":        "No relevant events found in your data to answer this question.",
-            "source_events": [],
-            "events_used":   0
-        }
-
-    # ── Step 2: AUGMENT ───────────────────────────────────
-    source_events = []
-    context_parts = []
-
-    for i, row in enumerate(rows, 1):
-        payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else dict(row["payload"])
-        event   = {
-            "id":         row["id"],
-            "event_type": row["event_type"],
-            "payload":    payload,
-            "created_at": str(row["created_at"]),
-            "similarity": round(float(row["similarity"]), 4)
-        }
-        source_events.append(event)
-
-        # Format as readable context line
-        context_parts.append(
-            f"Event {i}: type={row['event_type']}, "
-            f"data={json.dumps(payload, default=str)}, "
-            f"time={str(row['created_at'])}"
+    def _get_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
+        raise NotImplementedError(
+            "ExactScanPgVectorRetriever is async-only — use `.ainvoke()` / "
+            "`_aget_relevant_documents`, since retrieval depends on an "
+            "asyncpg connection."
         )
 
-    context = "\n".join(context_parts)
+    async def _aget_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
+        query_embedding = await embeddings.aembed_query(query)
+        embedding_str   = "[" + ",".join(str(x) for x in query_embedding) + "]"
 
-    # ── Step 3: GENERATE ──────────────────────────────────
-    prompt = f"""You are an assistant analyzing user activity data.
+        sql = """
+            SELECT
+                id, user_id, event_type, payload, created_at,
+                1 - (embedding <=> $1) AS similarity
+            FROM events
+            WHERE owner_id = $2
+              AND embedding IS NOT NULL
+            ORDER BY embedding <=> $1
+            LIMIT $3
+        """
+        rows = await self.async_conn.fetch(sql, embedding_str, self.user_id, self.top_k)
+
+        docs: List[Document] = []
+        for row in rows:
+            payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else dict(row["payload"])
+            content = (
+                f"type={row['event_type']}, "
+                f"data={json.dumps(payload, default=str)}, "
+                f"time={str(row['created_at'])}"
+            )
+            docs.append(
+                Document(
+                    page_content=content,
+                    metadata={
+                        "id":         row["id"],
+                        "event_type": row["event_type"],
+                        "payload":    payload,
+                        "created_at": str(row["created_at"]),
+                        "similarity": round(float(row["similarity"]), 4),
+                    },
+                )
+            )
+        return docs
+
+
+# ── RAG Pipeline (LangChain chain over the custom retriever) ──
+RAG_PROMPT = ChatPromptTemplate.from_template(
+    """You are an assistant analyzing user activity data.
 
 Here are the most relevant activity events from the database:
 {context}
@@ -223,9 +268,56 @@ Do not make up information. Be specific and use event details in your answer.
 Question: {question}
 
 Answer:"""
+)
 
-    response = model.generate_content(prompt)
-    answer   = response.text.strip()
+
+def _format_docs(docs: List[Document]) -> str:
+    return "\n".join(
+        f"Event {i}: {doc.page_content}" for i, doc in enumerate(docs, 1)
+    )
+
+
+async def rag_answer(
+    question:    str,
+    user_id:     int,
+    async_conn,
+    top_k:       int = 10
+) -> dict:
+    """
+    Full RAG pipeline, rebuilt on LangChain:
+    1. RETRIEVE  — ExactScanPgVectorRetriever (same SQL as before)
+    2. AUGMENT   — format retrieved Documents as structured context
+    3. GENERATE  — prompt template | Gemini chat model | str parser
+
+    Returns: {answer, source_events, events_used}
+    """
+    retriever = ExactScanPgVectorRetriever(
+        async_conn=async_conn, user_id=user_id, top_k=top_k
+    )
+    docs = await retriever.ainvoke(question)
+
+    if not docs:
+        return {
+            "answer":        "No relevant events found in your data to answer this question.",
+            "source_events": [],
+            "events_used":   0
+        }
+
+    context = _format_docs(docs)
+    rag_chain = RAG_PROMPT | llm | StrOutputParser()
+    answer = await rag_chain.ainvoke({"context": context, "question": question})
+    answer = answer.strip()
+
+    source_events = [
+        {
+            "id":         doc.metadata["id"],
+            "event_type": doc.metadata["event_type"],
+            "payload":    doc.metadata["payload"],
+            "created_at": doc.metadata["created_at"],
+            "similarity": doc.metadata["similarity"],
+        }
+        for doc in docs
+    ]
 
     return {
         "answer":        answer,
