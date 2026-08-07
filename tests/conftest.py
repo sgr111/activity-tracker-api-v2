@@ -46,6 +46,13 @@ def setup_database():
 
 
 # ── Session-scoped mocks — active for entire test session ──
+#only for session-scoped fixtures and have autouse=True so they -
+# - don't need to be explicitly requested in tests.
+
+#ALSO stays active while making shared_event_id, delete_event_id, and 
+#audit_delete_event_id fixtures, so those fixtures can call -
+# - POST /events/ without actually hitting Gemini or httpx."""
+
 @pytest.fixture(scope="session", autouse=True)
 def mock_gemini_session():
     """Mock Gemini (via LangChain) at session scope so shared fixtures can
@@ -111,6 +118,10 @@ def auth_headers(auth_token):
 
 
 # ── Function-scoped mocks for individual test overrides ────
+"""can override the session-scoped mock_gemini in a test by using this
+ fixture and changing the return value of mock_llm or mock_embed.
+ in other words can override responses from the model for a specific 
+ test without affecting other tests."""
 @pytest.fixture(autouse=True)
 def mock_gemini():
     """Function-scoped — lets individual tests override what the model
