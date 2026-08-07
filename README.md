@@ -5,16 +5,16 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-336791?logo=postgresql&logoColor=white)
 ![pgvector](https://img.shields.io/badge/pgvector-0.8.2-orange?logo=postgresql&logoColor=white)
 ![Gemini](https://img.shields.io/badge/Gemini_AI-Free_Tier-4285F4?logo=google&logoColor=white)
-![pytest](https://img.shields.io/badge/pytest-53_passing-brightgreen?logo=pytest&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-56_passing-brightgreen?logo=pytest&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-> A production-style AI-powered backend built with FastAPI, PostgreSQL, pgvector, and Google Gemini. Built with 100% free AI — Gemini Flash, Gemini Embeddings, scikit-learn. No paid API required.
+> A production-style AI-powered backend built with FastAPI, PostgreSQL, pgvector, LangChain, and Google Gemini. Built with 100% free AI — Gemini Flash, Gemini Embeddings, scikit-learn. No paid API required.
 
 ## Introduction
 
 - Production-style activity tracking API — FastAPI, JWT auth, PostgreSQL CDC audit trails, flexible JSONB event storage, and a hybrid asyncpg+SQLAlchemy architecture.
-- Five AI features on top: Gemini-powered natural language to SQL search, pgvector semantic search, automatic IsolationForest anomaly detection, and a full RAG pipeline grounding answers in real event data with zero hallucination.
-- Configuration centralized via pydantic-settings (fails loudly instead of an insecure default), updates are change-aware end to end (skips no-op re-embedding and audit logging), and the project is covered by a 53-test mocked suite plus real-API integration suites — one of which caught and verified the fix for a real anomaly-detection threshold bug found during manual testing.
+- Five AI features on top: Gemini-powered natural language to SQL search, pgvector semantic search, automatic IsolationForest anomaly detection, and a full RAG pipeline grounding answers in real event data with zero hallucination. The three Gemini-calling features (NL search, summarisation, RAG) are built as LangChain chains, with a custom retriever preserving an exact-scan pgvector query the project deliberately relies on (see Known Limitations #1).
+- Configuration centralized via pydantic-settings (fails loudly instead of an insecure default), updates are change-aware end to end (skips no-op re-embedding and audit logging), and the project is covered by a 53-test mocked suite plus a 3-test ANN-regression suite plus real-API integration suites — one of which caught and verified the fix for a real anomaly-detection threshold bug found during manual testing.
 
 ---
 
@@ -30,7 +30,7 @@
                 └──────────────┬──────────────────-┘        │
                                │                             ▼
                 ┌──────────────▼──────────────────┐   ┌─────────────┐
-                │         AI Services              │   │  PostgreSQL │
+                │      AI Services (LangChain)     │   │  PostgreSQL │
                 │                                  │   │             │
                 │  Gemini Flash ── NL Search       │   │  events     │
                 │  Gemini Flash ── Summarisation   │   │  (JSONB +   │
@@ -41,7 +41,8 @@
                 └──────────────────────────────────┘   │  (CDC auto) │
                                │                       │             │
                 asyncpg ───────┼──────────────────────▶│  pgvector   │
-                (pgvector <=>  │  semantic + RAG)       │  <=> cosine │
+                (pgvector <=>  │  semantic + RAG,       │  <=> cosine │
+                 via custom    │  ExactScanPgVectorRetriever)         │
                                │                       └─────────────┘
                 httpx ─────────┘ (payload enrichment)
 
@@ -61,12 +62,13 @@
 - **SlowAPI** — rate limiting on all endpoints
 - **httpx** — async external API enrichment
 - **pgvector** — semantic search via cosine similarity
+- **LangChain** — chains + a custom retriever wrapping all Gemini-calling AI features
 - **Gemini AI** — natural language search + event summarisation
 - **IsolationForest** — automatic anomaly detection on every insert
 - **RAG Pipeline** — grounded Q&A from your real event data, zero hallucination
 - **Centralized Config** — validated settings via `pydantic-settings`, no scattered `os.getenv()`
 - **In-Memory Caching** — LRU+TTL cache on NL-to-SQL and summarisation endpoints; same question never re-hits Gemini within the TTL window, with automatic invalidation on data changes
-- **pytest** — 53-test suite covering auth, CRUD, AI endpoints, and security
+- **pytest** — 53-test mocked suite + 3-test ANN-regression suite covering auth, CRUD, AI endpoints, security, and retrieval architecture
 
 ---
 
@@ -97,6 +99,7 @@ This is an **user activity tracking API** where authenticated users log events (
 | **Hybrid DB Architecture** | SQLAlchemy ORM + asyncpg | ORM for CRUD/auth, asyncpg for AI routes needing pgvector operators |
 | **Vector Storage & Search** | pgvector | Events stored as 3072-dim vectors, searched by cosine similarity |
 | **Centralized Settings** | pydantic-settings | One validated `Settings` object instead of `os.getenv()` scattered across files |
+| **LangChain Chains + Custom Retriever** | langchain-google-genai | NL search, summarisation, and RAG generation are LangChain chains; RAG retrieval goes through a custom `ExactScanPgVectorRetriever`, not LangChain's default (ANN-index-assuming) PGVector retriever |
 
 ---
 
@@ -126,7 +129,7 @@ activity_tracker/
 │
 ├── services/
 │   ├── auth_service.py              # bcrypt, JWT encode/decode, get_current_user
-│   ├── ai_service.py                # Gemini NL search, summary, embeddings, RAG (cache-aware)
+│   ├── ai_service.py                # LangChain chains: Gemini NL search, summary, embeddings, RAG (cache-aware)
 │   ├── local_cache.py               # In-memory LRU+TTL cache — same interface as Upstash version for easy swap
 │   ├── enrichment.py                # httpx external API enrichment
 │   └── anomaly_service.py           # IsolationForest, feature extraction, joblib
@@ -141,12 +144,13 @@ activity_tracker/
 │       └── 006_fix_trigger_exclude_updated_at.py  # exclude updated_at/created_at from no-op check
 │
 ├── tests/
-│   ├── conftest.py                  # Fixtures, mocks, shared test client
+│   ├── conftest.py                  # Fixtures, mocks (LangChain classes), shared test client
 │   ├── test_auth.py                 # Auth flow tests
 │   ├── test_events.py               # Event CRUD tests
 │   ├── test_audit.py                # CDC audit trail tests
 │   ├── test_ai.py                   # AI endpoint tests
-│   └── test_security.py             # JWT + ownership scoping tests
+│   ├── test_security.py             # JWT + ownership scoping tests
+│   └── test_ann_regression.py       # Guards against reintroducing an ANN-index pgvector retriever
 │
 ├── test_integration_ai.py           # Real-API integration tests — Gemini + anomaly (not mocked, run manually)
 ├── test_integration_update_audit.py # Real-API integration tests — update no-op + audit trigger (not mocked, run manually)
@@ -173,8 +177,13 @@ Different from NL search — finds events by *meaning* not keywords.
 `"user had trouble logging in"` → finds `status: failed` events
 because their vector representations are mathematically similar.
 
-### RAG Pipeline
-1. **Retrieve** — question embedded → top-10 similar events via `<=>` cosine distance
+### RAG Pipeline (LangChain)
+Built with LangChain — a custom `ExactScanPgVectorRetriever` (a `BaseRetriever`
+subclass) wraps the *same* exact-scan pgvector query that was already in
+place, feeding a `PromptTemplate | ChatGoogleGenerativeAI | StrOutputParser`
+chain. NL-to-SQL and summarisation were moved to LangChain chains too, so
+all three AI calls share one consistent interface.
+1. **Retrieve** — question embedded → top-10 similar events via `<=>` cosine distance, via the custom retriever (deliberately *not* LangChain's default PGVector retriever — see Known Limitations #1)
 2. **Augment** — retrieved events formatted as structured context
 3. **Generate** — Gemini answers from context only → zero hallucination
 
@@ -360,6 +369,7 @@ pytest -v
 pytest tests/test_auth.py -v
 pytest tests/test_events.py -v
 pytest tests/test_ai.py -v
+pytest tests/test_ann_regression.py -v
 ```
 
 ### Run a single test
@@ -373,7 +383,7 @@ pip install pytest-cov
 pytest --cov=. --cov-report=html
 ```
 
-### Test suite breakdown — 53 tests
+### Test suite breakdown — 56 tests
 
 | File | Tests | What It Covers |
 |------|-------|---------------|
@@ -382,20 +392,21 @@ pytest --cov=. --cov-report=html
 | `test_audit.py` | 7 | CDC audit trail endpoints, operation filtering, limit |
 | `test_ai.py` | 10 | NL search, summary, anomaly detection, non-SELECT SQL blocking, health |
 | `test_security.py` | 6 | JWT expiry, no-token rejection, owner_id data scoping |
+| `test_ann_regression.py` | 3 | No ANN index on `events.embedding`; retriever's query plan is a sequential scan; retriever class isn't LangChain's default PGVector retriever |
 
 <details>
 <summary><b>What is mocked, integration tests, and CDC trigger coverage</b></summary>
 
 ### What is mocked in tests
-- **Gemini API** — `genai.embed_content()` and `model.generate_content()` are mocked with session-scoped fixtures so tests never hit the real API
+- **Gemini API** — `ChatGoogleGenerativeAI.ainvoke()` and `GoogleGenerativeAIEmbeddings.aembed_query()` are mocked at the class level with session-scoped fixtures, so every LangChain chain (regardless of when it was built) is mocked and tests never hit the real API
 - **httpx enrichment** — external API call is mocked to return a 200 response
-- **asyncpg pool** — mocked so tests don't need a live asyncpg connection
+- **asyncpg pool** — mocked so tests don't need a live asyncpg connection (except `test_ann_regression.py`, which deliberately connects to the real test database to inspect actual indexes and query plans)
 
 ### Integration tests (real Gemini, real anomaly model, real audit trigger)
-The 53-test suite above is fully mocked — it verifies code logic, not whether
-Gemini, the trained anomaly model, or the live PostgreSQL trigger actually
-behave sanely against real data. Two integration test files fill that gap by
-hitting a live running server with real HTTP calls, using a throwaway test user:
+The 53-test mocked suite above verifies code logic, not whether Gemini, the
+trained anomaly model, or the live PostgreSQL trigger actually behave sanely
+against real data. Two integration test files fill that gap by hitting a
+live running server with real HTTP calls, using a throwaway test user:
 
 - **`test_integration_ai.py`** — creates real events and checks Gemini
   summary/RAG endpoints return real, non-empty, data-grounded answers, and
@@ -412,7 +423,7 @@ Neither test is run by plain `pytest` (both need a live server and make real
 API/DB calls, so they're excluded from routine/CI runs). Run the full check
 manually before a demo or deploy:
 ```bash
-pytest -v                                   # 1. mocked suite — no server needed
+pytest -v                                   # 1. mocked + ANN-regression suite — no server needed
 
 uvicorn main:app --reload                   # 2. start the server, in one terminal
 
@@ -442,6 +453,14 @@ pgvector's ANN indexes (HNSW and IVFFlat) both have a hard limit of **2000 dimen
 - Using `output_dimensionality=768` with Matryoshka-capable models to stay within the 2000-dim limit
 - Switching to a dedicated vector database (Pinecone, Weaviate) for millions of vectors
 
+**Preserved through the LangChain refactor:** the RAG pipeline was rebuilt on
+LangChain, but retrieval still goes through a custom `ExactScanPgVectorRetriever`
+— *not* LangChain's default PGVector retriever, which assumes an ANN index
+exists. Using the default would have silently reintroduced this exact
+limitation as a bug. `tests/test_ann_regression.py` guards against that
+regression (confirms no ANN index exists on `events.embedding` and that the
+query plan is a sequential scan).
+
 ### 2. ~~CDC Triggers Not Installed on Test Database~~ — Covered by integration tests
 The mocked test suite uses `Base.metadata.create_all()`, which does **not** install PostgreSQL trigger functions, so trigger behavior isn't exercised by the mocked `test_audit.py` suite. This is now covered by `test_integration_update_audit.py`, which runs against the real trigger on the real database. To also enable trigger-aware tests inside the mocked suite, run `alembic -x db=test upgrade head` instead of `create_all()`.
 
@@ -460,9 +479,12 @@ The IsolationForest model requires at least 5 events to train. New users with fe
 ### 5. Gemini Model Names Change Frequently
 Google deprecates Gemini model names regularly. If you encounter a `404 Not Found` error from the Gemini API, check the current model names at [aistudio.google.com](https://aistudio.google.com) and update `services/ai_service.py`:
 ```python
-model           = genai.GenerativeModel("gemini-2.5-flash")   # update if deprecated
-EMBEDDING_MODEL = "models/gemini-embedding-001"               # update if deprecated
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", ...)   # update if deprecated
+EMBEDDING_MODEL = "models/gemini-embedding-001"                # update if deprecated
 ```
+(As of the LangChain refactor, the model is wrapped via `langchain-google-genai`'s
+`ChatGoogleGenerativeAI` / `GoogleGenerativeAIEmbeddings` instead of the raw
+`google-generativeai` SDK — same underlying models, different wrapper.)
 
 ### 6. ~~Scattered Environment Variable Access~~ — Fixed
 Environment variables were previously read independently in four different
@@ -519,13 +541,14 @@ asyncpg           — AI routes (pgvector operators)
 JWT + bcrypt      — Authentication
 SlowAPI           — Per-user rate limiting
 httpx             — Async payload enrichment
-Gemini Flash      — NL search, summarisation, RAG generation
-Gemini Embeddings — 3072-dim event vectors
+LangChain         — chain/retriever framework wrapping all 3 Gemini calls (custom ExactScanPgVectorRetriever for RAG)
+Gemini Flash      — NL search, summarisation, RAG generation (via langchain-google-genai)
+Gemini Embeddings — 3072-dim event vectors (via langchain-google-genai)
 scikit-learn      — IsolationForest anomaly detection
 joblib            — ML model serialisation
 pydantic-settings — Centralized, validated environment configuration
 local_cache       — In-memory LRU+TTL cache (OrderedDict); Upstash Redis version also drafted for easy swap
-pytest            — 53-test suite (auth, CRUD, AI, security)
+pytest            — 56-test suite (53 mocked: auth/CRUD/AI/security + 3 ANN-regression)
 ```
 
 </details>
@@ -539,7 +562,7 @@ uvicorn main:app --reload                   # Start server
 alembic upgrade head                        # Apply all migrations
 alembic downgrade -1                        # Rollback one migration
 alembic history --verbose                   # See migration history
-pytest                                      # Run full test suite (53 tests)
+pytest                                      # Run full test suite (56 tests)
 pytest -v                                   # Verbose test output
 pytest test_integration_ai.py -v            # Real-API: Gemini + anomaly (server must be running)
 pytest test_integration_update_audit.py -v  # Real-API: update no-op + audit trigger (server must be running)
