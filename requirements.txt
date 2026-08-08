@@ -21,3 +21,6 @@ joblib
 pydantic-settings==2.14.2
 httpx==0.28.1
 pydantic==2.13.4
+
+git+https://github.com/sgr111/llm-observability.git@main#egg=llm_observability 
+pyyaml==6.0.2

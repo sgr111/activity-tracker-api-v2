@@ -1,0 +1,83 @@
+# Activity Tracker prompt registry — consumed via
+# llm_observability.prompts.registry.PromptRegistry.from_yaml("prompts.yaml")
+#
+# v1 for all three = the exact prompt text that was already in ai_service.py
+# before this refactor (word-for-word), so wiring this in changes NOTHING
+# about model behavior — only makes the prompt versioned/traceable.
+
+rag_answer:
+  v1:
+    active: true
+    template: |
+      You are an assistant analyzing user activity data.
+
+      Here are the most relevant activity events from the database:
+      {context}
+
+      Answer the following question using ONLY the data provided above.
+      If the answer cannot be determined from the provided events, say so clearly.
+      Do not make up information. Be specific and use event details in your answer.
+
+      Question: {question}
+
+      Answer:
+
+nl_to_sql:
+  v1:
+    active: true
+    template: |
+      You are a PostgreSQL expert. You have access to these two tables:
+
+      TABLE: events
+        id          SERIAL PRIMARY KEY
+        user_id     INTEGER
+        owner_id    INTEGER  -- FK to users.id
+        event_type  TEXT        -- values: login, logout, purchase, page_view
+        payload     JSONB       -- flexible JSON, examples below
+        created_at  TIMESTAMPTZ
+        updated_at  TIMESTAMPTZ
+
+      JSONB payload examples:
+        login/logout: {{"ip": "1.2.3.4", "country": "IN", "device": "mobile", "status": "success"|"failed"}}
+        purchase:     {{"ip": "1.2.3.4", "country": "US", "amount": 99.99, "item": "Pro Plan"}}
+        page_view:    {{"ip": "1.2.3.4", "country": "UK", "page": "/dashboard", "duration_ms": 1200}}
+
+      TABLE: events_audit
+        id          BIGSERIAL PRIMARY KEY
+        operation   TEXT        -- INSERT, UPDATE, DELETE
+        changed_at  TIMESTAMPTZ
+        old_data    JSONB
+        new_data    JSONB
+
+      Useful JSONB operators:
+        payload->>'key'          -- get value as text
+        payload @> '{{"k":"v"}}'  -- contains check
+        payload ? 'key'          -- key exists
+
+      IMPORTANT rules:
+        - Always return SELECT queries only. Never INSERT/UPDATE/DELETE.
+        - Use LIMIT 50 unless user specifies otherwise.
+        - Use payload->>'field' for JSONB field comparisons.
+        - Return ONLY the raw SQL query, no explanation, no markdown, no backticks.
+
+      Convert this question into a valid PostgreSQL SELECT query:
+      "{question}"
+
+      Return only the raw SQL. No explanation. No markdown. No backticks.
+
+summarization:
+  v1:
+    active: true
+    template: |
+      You are an analyst reviewing user activity logs for a web application.
+
+      Here are the recent events:
+      {events_text}
+
+      Write a concise plain-English summary (3-5 sentences) covering:
+      - What types of activities happened
+      - Any notable patterns (repeated logins, failed attempts, purchases)
+      - Countries or devices involved
+      - Anything suspicious or worth flagging
+
+      Be direct and specific. Use numbers where possible.

@@ -18,9 +18,22 @@ Scope decision for NL-to-SQL / summarization: both are single Gemini calls
 that don't touch the retriever at all, but they're moved to LangChain
 chains anyway (PromptTemplate | llm | StrOutputParser) for consistency and
 so a later observability wiring pass can attach uniformly to all three.
+
+STEP 2 (llm-observability wiring): all three prompts now load from
+prompts.yaml via PromptRegistry (versioned, traceable — no more inline
+prompt strings), and every chain invocation gets an ObservabilityCallback
+attached so every Gemini call is logged to llm_calls (project +
+feature-tagged). See observability.py for why that's a custom callback
+bridging into track_llm_call() rather than calling track_llm_call() inline.
+
+OPEN ITEM: db_session defaults to None everywhere below, which makes
+llm_observability log to console/JSON instead of the llm_calls table
+(fail-open by design, not broken). Wire a real SQLAlchemy AsyncSession in
+once one exists in this project.
 """
 
 import json
+from pathlib import Path
 from typing import Any, List
 
 from langchain_core.documents import Document
@@ -28,13 +41,19 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.retrievers import BaseRetriever
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from llm_observability.prompts.registry import PromptRegistry
 
 from config import settings
 from local_cache import cache_get, cache_set, nl_search_key, summary_key
+try:
+    from services.observability import ObservabilityCallback
+except ModuleNotFoundError:
+    from observability import ObservabilityCallback
 
 # ── Models ─────────────────────────────────────────────────
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 EMBEDDING_DIM   = 3072
+PROJECT_NAME    = "activity-tracker"
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
@@ -46,43 +65,12 @@ embeddings = GoogleGenerativeAIEmbeddings(
     google_api_key=settings.GEMINI_API_KEY,
 )
 
+# ── Prompt registry (versioned templates, see prompts.yaml) ──
+_prompt_registry = PromptRegistry.from_yaml(str(Path(__file__).parent / "prompts.yaml"))
 
-# ── Schema context for NL search ───────────────────────────
-DB_SCHEMA = """
-You are a PostgreSQL expert. You have access to these two tables:
-
-TABLE: events
-  id          SERIAL PRIMARY KEY
-  user_id     INTEGER
-  owner_id    INTEGER  -- FK to users.id
-  event_type  TEXT        -- values: login, logout, purchase, page_view
-  payload     JSONB       -- flexible JSON, examples below
-  created_at  TIMESTAMPTZ
-  updated_at  TIMESTAMPTZ
-
-JSONB payload examples:
-  login/logout: {{"ip": "1.2.3.4", "country": "IN", "device": "mobile", "status": "success"|"failed"}}
-  purchase:     {{"ip": "1.2.3.4", "country": "US", "amount": 99.99, "item": "Pro Plan"}}
-  page_view:    {{"ip": "1.2.3.4", "country": "UK", "page": "/dashboard", "duration_ms": 1200}}
-
-TABLE: events_audit
-  id          BIGSERIAL PRIMARY KEY
-  operation   TEXT        -- INSERT, UPDATE, DELETE
-  changed_at  TIMESTAMPTZ
-  old_data    JSONB
-  new_data    JSONB
-
-Useful JSONB operators:
-  payload->>'key'          -- get value as text
-  payload @> '{{"k":"v"}}'  -- contains check
-  payload ? 'key'          -- key exists
-
-IMPORTANT rules:
-  - Always return SELECT queries only. Never INSERT/UPDATE/DELETE.
-  - Use LIMIT 50 unless user specifies otherwise.
-  - Use payload->>'field' for JSONB field comparisons.
-  - Return ONLY the raw SQL query, no explanation, no markdown, no backticks.
-"""
+_rag_prompt_entry       = _prompt_registry.get("rag_answer")
+_nl_to_sql_prompt_entry = _prompt_registry.get("nl_to_sql")
+_summary_prompt_entry   = _prompt_registry.get("summarization")
 
 
 def _clean_payload(payload: dict) -> dict:
@@ -110,27 +98,29 @@ async def embed_text(text: str) -> list[float]:
 
 
 # ── NL to SQL (LangChain chain) ────────────────────────────
-NL_TO_SQL_PROMPT = ChatPromptTemplate.from_template(
-    DB_SCHEMA
-    + """
-Convert this question into a valid PostgreSQL SELECT query:
-"{question}"
-
-Return only the raw SQL. No explanation. No markdown. No backticks."""
-)
-
+NL_TO_SQL_PROMPT = ChatPromptTemplate.from_template(_nl_to_sql_prompt_entry.template)
 nl_to_sql_chain = NL_TO_SQL_PROMPT | llm | StrOutputParser()
 
 
-async def natural_language_to_sql(question: str) -> str:
+async def natural_language_to_sql(question: str, db_session=None) -> str:
     """Convert plain English to PostgreSQL SELECT via Gemini. Cached — same
-    question never re-hits Gemini within the TTL window."""
+    question never re-hits Gemini within the TTL window. Cache hits skip
+    Gemini entirely, so nothing gets logged for them (no LLM call happened)."""
     cache_key = nl_search_key(question)
     cached    = await cache_get(cache_key)
     if cached:
         return cached["sql"]
 
-    sql = await nl_to_sql_chain.ainvoke({"question": question})
+    obs_cb = ObservabilityCallback(
+        project=PROJECT_NAME,
+        feature="nl_to_sql",
+        prompt_name="nl_to_sql",
+        prompt_version=_nl_to_sql_prompt_entry.version,
+        db_session=db_session,
+    )
+    sql = await nl_to_sql_chain.ainvoke(
+        {"question": question}, config={"callbacks": [obs_cb]}
+    )
     sql = sql.strip()
     sql = sql.replace("```sql", "").replace("```", "").strip()
 
@@ -143,25 +133,11 @@ async def natural_language_to_sql(question: str) -> str:
 
 
 # ── Event summarisation (LangChain chain) ──────────────────
-SUMMARY_PROMPT = ChatPromptTemplate.from_template(
-    """You are an analyst reviewing user activity logs for a web application.
-
-Here are the recent events:
-{events_text}
-
-Write a concise plain-English summary (3-5 sentences) covering:
-- What types of activities happened
-- Any notable patterns (repeated logins, failed attempts, purchases)
-- Countries or devices involved
-- Anything suspicious or worth flagging
-
-Be direct and specific. Use numbers where possible."""
-)
-
+SUMMARY_PROMPT = ChatPromptTemplate.from_template(_summary_prompt_entry.template)
 summary_chain = SUMMARY_PROMPT | llm | StrOutputParser()
 
 
-async def summarise_events(events: list[dict]) -> str:
+async def summarise_events(events: list[dict], db_session=None) -> str:
     """Use Gemini to produce a plain-English summary of events. Cached per
     exact event-set (auto-invalidates the moment the set changes) and sends
     only the fields Gemini actually needs — not the full raw JSON."""
@@ -183,7 +159,16 @@ async def summarise_events(events: list[dict]) -> str:
         lines.append(f"type={e.get('event_type')} {fields}")
     events_text = "\n".join(lines)
 
-    summary = await summary_chain.ainvoke({"events_text": events_text})
+    obs_cb = ObservabilityCallback(
+        project=PROJECT_NAME,
+        feature="summarization",
+        prompt_name="summarization",
+        prompt_version=_summary_prompt_entry.version,
+        db_session=db_session,
+    )
+    summary = await summary_chain.ainvoke(
+        {"events_text": events_text}, config={"callbacks": [obs_cb]}
+    )
     summary = summary.strip()
 
     if cache_key:
@@ -254,20 +239,7 @@ class ExactScanPgVectorRetriever(BaseRetriever):
 
 
 # ── RAG Pipeline (LangChain chain over the custom retriever) ──
-RAG_PROMPT = ChatPromptTemplate.from_template(
-    """You are an assistant analyzing user activity data.
-
-Here are the most relevant activity events from the database:
-{context}
-
-Answer the following question using ONLY the data provided above.
-If the answer cannot be determined from the provided events, say so clearly.
-Do not make up information. Be specific and use event details in your answer.
-
-Question: {question}
-
-Answer:"""
-)
+RAG_PROMPT = ChatPromptTemplate.from_template(_rag_prompt_entry.template)
 
 
 def _format_docs(docs: List[Document]) -> str:
@@ -280,7 +252,8 @@ async def rag_answer(
     question:    str,
     user_id:     int,
     async_conn,
-    top_k:       int = 10
+    top_k:       int = 10,
+    db_session=None,
 ) -> dict:
     """
     Full RAG pipeline, rebuilt on LangChain:
@@ -303,8 +276,17 @@ async def rag_answer(
         }
 
     context = _format_docs(docs)
+    obs_cb = ObservabilityCallback(
+        project=PROJECT_NAME,
+        feature="rag_qa",
+        prompt_name="rag_answer",
+        prompt_version=_rag_prompt_entry.version,
+        db_session=db_session,
+    )
     rag_chain = RAG_PROMPT | llm | StrOutputParser()
-    answer = await rag_chain.ainvoke({"context": context, "question": question})
+    answer = await rag_chain.ainvoke(
+        {"context": context, "question": question}, config={"callbacks": [obs_cb]}
+    )
     answer = answer.strip()
 
     source_events = [
