@@ -8,12 +8,13 @@
 ![pytest](https://img.shields.io/badge/pytest-56_passing-brightgreen?logo=pytest&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-> A production-style AI-powered backend built with FastAPI, PostgreSQL, pgvector, LangChain, and Google Gemini. Built with 100% free AI — Gemini Flash, Gemini Embeddings, scikit-learn. No paid API required.
+> A production-style AI-powered backend built with FastAPI, PostgreSQL, pgvector, LangChain, and Google Gemini — with every LLM call logged, versioned, and traceable via a shared `llm-observability` package. Built with 100% free AI — Gemini Flash, Gemini Embeddings, scikit-learn. No paid API required.
 
 ## Introduction
 
 - Production-style activity tracking API — FastAPI, JWT auth, PostgreSQL CDC audit trails, flexible JSONB event storage, and a hybrid asyncpg+SQLAlchemy architecture.
 - Five AI features on top: Gemini-powered natural language to SQL search, pgvector semantic search, automatic IsolationForest anomaly detection, and a full RAG pipeline grounding answers in real event data with zero hallucination. The three Gemini-calling features (NL search, summarisation, RAG) are built as LangChain chains, with a custom retriever preserving an exact-scan pgvector query the project deliberately relies on (see Known Limitations #1).
+- Every one of those three Gemini calls is logged through **`llm-observability`** — a shared, separately-versioned package (`sgr111/llm-observability`) also used across this author's other projects. Prompts are versioned via a YAML registry rather than hardcoded strings, and every call — project, feature, prompt version, latency, success/failure — lands in an `llm_calls` table for later analysis.
 - Configuration centralized via pydantic-settings (fails loudly instead of an insecure default), updates are change-aware end to end (skips no-op re-embedding and audit logging), and the project is covered by a 53-test mocked suite plus a 3-test ANN-regression suite plus real-API integration suites — one of which caught and verified the fix for a real anomaly-detection threshold bug found during manual testing.
 
 ---
@@ -37,18 +38,24 @@
                 │  Gemini Flash ── RAG Generation  │   │   vector +  │
                 │  Gemini Embed ── embed_text()    │   │   anomaly)  │
                 │  IsolationForest ── anomaly      │   │             │
-                │                                  │   │  events_audit│
-                └──────────────────────────────────┘   │  (CDC auto) │
-                               │                       │             │
-                asyncpg ───────┼──────────────────────▶│  pgvector   │
-                (pgvector <=>  │  semantic + RAG,       │  <=> cosine │
-                 via custom    │  ExactScanPgVectorRetriever)         │
+                │             │                    │   │  events_audit│
+                │             ▼                    │   │  (CDC auto) │
+                │  ObservabilityCallback ──────────┼──▶│  llm_calls  │
+                │  (services/observability.py)     │   │  (call logs)│
+                └──────────────────────────────────┘   │             │
+                               │                       │  pgvector   │
+                asyncpg ───────┼──────────────────────▶│  <=> cosine │
+                (pgvector <=>  │  semantic + RAG,       │  via custom │
+                 ExactScanPgVectorRetriever)            │             │
                                │                       └─────────────┘
                 httpx ─────────┘ (payload enrichment)
 
         config.py (pydantic-settings) ── single source of truth for
         SECRET_KEY / ALGORITHM / ACCESS_TOKEN_EXPIRE_MINUTES /
         GEMINI_API_KEY / DATABASE_URL — imported by every service above
+
+        services/prompts.yaml ── versioned prompt templates, loaded via
+        llm_observability.prompts.registry.PromptRegistry
 ```
 
 ---
@@ -63,6 +70,7 @@
 - **httpx** — async external API enrichment
 - **pgvector** — semantic search via cosine similarity
 - **LangChain** — chains + a custom retriever wrapping all Gemini-calling AI features
+- **LLM Observability** — every Gemini call logged (project/feature/latency/success) and every prompt versioned via a shared `llm-observability` package
 - **Gemini AI** — natural language search + event summarisation
 - **IsolationForest** — automatic anomaly detection on every insert
 - **RAG Pipeline** — grounded Q&A from your real event data, zero hallucination
@@ -95,11 +103,12 @@ This is an **user activity tracking API** where authenticated users log events (
 | **JWT Authentication** | python-jose + bcrypt | Register, login, protected routes, per-user data scoping |
 | **Per-User Rate Limiting** | SlowAPI | Each user gets their own rate limit bucket via JWT identity |
 | **Async HTTP Enrichment** | httpx | Every new event enriched via external API call on insert |
-| **Versioned Migrations** | Alembic | Full schema version control with upgrade/downgrade (6 migrations) |
-| **Hybrid DB Architecture** | SQLAlchemy ORM + asyncpg | ORM for CRUD/auth, asyncpg for AI routes needing pgvector operators |
+| **Versioned Migrations** | Alembic | Full schema version control with upgrade/downgrade (7 migrations) |
+| **Hybrid DB Architecture** | SQLAlchemy ORM + asyncpg + async SQLAlchemy | Sync ORM for CRUD/auth, asyncpg for AI routes needing pgvector operators, a dedicated async SQLAlchemy engine for LLM call logging |
 | **Vector Storage & Search** | pgvector | Events stored as 3072-dim vectors, searched by cosine similarity |
 | **Centralized Settings** | pydantic-settings | One validated `Settings` object instead of `os.getenv()` scattered across files |
 | **LangChain Chains + Custom Retriever** | langchain-google-genai | NL search, summarisation, and RAG generation are LangChain chains; RAG retrieval goes through a custom `ExactScanPgVectorRetriever`, not LangChain's default (ANN-index-assuming) PGVector retriever |
+| **LLM Observability** | llm-observability (`sgr111/llm-observability`) | Every Gemini call bridged through a custom LangChain callback into a shared logging package — versioned prompts, per-call latency/success tracking, project+feature tagging |
 
 ---
 
@@ -107,10 +116,11 @@ This is an **user activity tracking API** where authenticated users log events (
 
 ```
 activity_tracker/
-├── main.py                          # App entry, lifespan, rate limiter
+├── main.py                          # App entry, lifespan (httpx + asyncpg pool + logging engine), rate limiter
 ├── config.py                        # Centralized, validated settings (pydantic-settings)
 ├── database.py                      # SQLAlchemy engine + get_db
 ├── database_async.py                # asyncpg pool + get_async_conn
+├── database_logging.py              # Async SQLAlchemy engine + get_logging_session (dedicated to llm_calls logging)
 │
 ├── models/
 │   ├── user.py                      # User ORM model
@@ -129,7 +139,9 @@ activity_tracker/
 │
 ├── services/
 │   ├── auth_service.py              # bcrypt, JWT encode/decode, get_current_user
-│   ├── ai_service.py                # LangChain chains: Gemini NL search, summary, embeddings, RAG (cache-aware)
+│   ├── ai_service.py                # LangChain chains: Gemini NL search, summary, embeddings, RAG (cache-aware, observability-wired)
+│   ├── observability.py             # ObservabilityCallback — bridges LangChain callbacks into llm_observability.track_llm_call()
+│   ├── prompts.yaml                 # Versioned prompt templates (rag_answer, nl_to_sql, summarization), loaded via PromptRegistry
 │   ├── local_cache.py               # In-memory LRU+TTL cache — same interface as Upstash version for easy swap
 │   ├── enrichment.py                # httpx external API enrichment
 │   └── anomaly_service.py           # IsolationForest, feature extraction, joblib
@@ -141,7 +153,8 @@ activity_tracker/
 │       ├── 003_add_embedding_column.py      # vector(3072) column
 │       ├── 004_add_anomaly_columns.py       # anomaly_score + is_anomaly
 │       ├── 005_optimize_audit_trigger.py    # skip no-op UPDATE logging (first attempt)
-│       └── 006_fix_trigger_exclude_updated_at.py  # exclude updated_at/created_at from no-op check
+│       ├── 006_fix_trigger_exclude_updated_at.py  # exclude updated_at/created_at from no-op check
+│       └── 007_create_llm_calls_table.py    # llm_calls table for llm-observability logging
 │
 ├── tests/
 │   ├── conftest.py                  # Fixtures, mocks (LangChain classes), shared test client
@@ -182,10 +195,48 @@ Built with LangChain — a custom `ExactScanPgVectorRetriever` (a `BaseRetriever
 subclass) wraps the *same* exact-scan pgvector query that was already in
 place, feeding a `PromptTemplate | ChatGoogleGenerativeAI | StrOutputParser`
 chain. NL-to-SQL and summarisation were moved to LangChain chains too, so
-all three AI calls share one consistent interface.
+all three AI calls share one consistent interface — and, per below, one
+consistent observability path.
 1. **Retrieve** — question embedded → top-10 similar events via `<=>` cosine distance, via the custom retriever (deliberately *not* LangChain's default PGVector retriever — see Known Limitations #1)
 2. **Augment** — retrieved events formatted as structured context
 3. **Generate** — Gemini answers from context only → zero hallucination
+
+### LLM Observability
+Every one of the three Gemini-calling chains above (RAG, NL-to-SQL,
+summarisation) gets an `ObservabilityCallback` attached to its `.ainvoke()`
+call. That callback logs the call to `llm-observability`
+(`sgr111/llm-observability` — a shared package, also used in this author's
+other projects) via `track_llm_call()`, which writes a row to `llm_calls`:
+project (`activity-tracker`), feature (`rag_qa` / `nl_to_sql` /
+`summarization`), prompt name + version, latency, success/failure, and
+(when available) token counts.
+
+**Why a custom callback instead of calling `track_llm_call()` directly:**
+`track_llm_call()` is a function wrapper — it expects to time a live async
+call itself. LangChain's callback hooks (`on_llm_start` / `on_llm_end`)
+fire *after* the real Gemini call already happened, so there's no live
+call left to hand it. `ObservabilityCallback` (`services/observability.py`)
+bridges this: it captures the real start/end time itself from LangChain's
+own callback timestamps (more accurate than timing the whole chain from
+outside — it brackets only the actual model call), then calls
+`track_llm_call()` with an already-resolved no-op function purely to reuse
+its persistence path, passing the real elapsed time via a small
+`latency_ms_override` addition to `track_llm_call()`.
+
+**Prompt versioning:** all three prompts live in `services/prompts.yaml`
+(not hardcoded strings) and load through
+`llm_observability.prompts.registry.PromptRegistry` at import time — so
+every logged call also carries a `prompt_version`, letting future prompt
+changes be tracked and compared against `llm_calls` history.
+
+**Current caveat:** the `latency_ms_override` patch above lives in this
+author's local fork of `llm-observability` and hasn't been pushed to
+`sgr111/llm-observability` on GitHub yet. Until it is, `track_llm_call()`
+still logs every call successfully (project/feature/prompt/success are all
+accurate) but `latency_ms` reads `0` for LangChain-sourced calls instead of
+the real duration — `ObservabilityCallback` detects the missing parameter
+and falls back gracefully rather than dropping the log entry. Verified via
+`psql` against the real `llm_calls` table after wiring this up.
 
 ### Anomaly Detection
 IsolationForest trained on your events. Features extracted from JSONB:
@@ -218,6 +269,7 @@ TTL window. Cache keys are designed for automatic invalidation: the summary key
 is derived from the sorted list of event IDs currently in scope, so adding or
 deleting any event silently changes the key and forces a fresh Gemini call on the
 next request, preventing stale summaries without any manual invalidation logic.
+Cache hits also skip the observability log entirely — there's no LLM call to log.
 The prompt sent to Gemini for summarisation was also shrunk — the earlier
 `json.dumps(events, indent=2)` format included `id`, full ISO timestamps, and
 enrichment metadata that Gemini doesn't use; replaced with a compact per-event
@@ -253,12 +305,12 @@ to multiple workers or needs cache persistence across restarts.
 ### Events — AI
 | Method | Path | Rate Limit | Description |
 |--------|------|-----------|-------------|
-| POST | `/events/ai/search` | 10/min | Natural language → SQL → results via Gemini |
-| POST | `/events/ai/summary` | 5/min | Plain English summary of your events |
+| POST | `/events/ai/search` | 10/min | Natural language → SQL → results via Gemini (LangChain chain, logged to llm_calls) |
+| POST | `/events/ai/summary` | 5/min | Plain English summary of your events (LangChain chain, logged to llm_calls) |
 | POST | `/events/ai/semantic` | 10/min | Semantic search via pgvector cosine similarity |
 | POST | `/events/ai/anomaly/train` | 5/min | Train IsolationForest on your events |
 | GET | `/events/ai/anomaly/scan` | 5/min | Score + flag all existing events |
-| POST | `/events/ai/ask` | 5/min | RAG — grounded Q&A from your real event data |
+| POST | `/events/ai/ask` | 5/min | RAG — grounded Q&A from your real event data (LangChain chain, logged to llm_calls) |
 
 ### Audit / CDC
 | Method | Path | Rate Limit | Description |
@@ -306,6 +358,8 @@ createdb activity_tracker
 psql -U postgres -d activity_tracker -c "CREATE EXTENSION IF NOT EXISTS vector;"
 alembic upgrade head
 ```
+This also creates the `llm_calls` table (migration 007) that LLM Observability
+logs to — see "LLM Observability" above.
 
 ### 4. Run
 ```bash
@@ -401,6 +455,7 @@ pytest --cov=. --cov-report=html
 - **Gemini API** — `ChatGoogleGenerativeAI.ainvoke()` and `GoogleGenerativeAIEmbeddings.aembed_query()` are mocked at the class level with session-scoped fixtures, so every LangChain chain (regardless of when it was built) is mocked and tests never hit the real API
 - **httpx enrichment** — external API call is mocked to return a 200 response
 - **asyncpg pool** — mocked so tests don't need a live asyncpg connection (except `test_ann_regression.py`, which deliberately connects to the real test database to inspect actual indexes and query plans)
+- **LLM Observability is NOT specifically mocked, and doesn't need to be** — because `ChatGoogleGenerativeAI.ainvoke()` is mocked wholesale (see above), LangChain's own callback-firing machinery is bypassed too, so `ObservabilityCallback` simply never fires during the mocked suite. This is expected, not a gap: observability only exercises for real against a live server hitting real Gemini (see `test_integration_ai.py` below, or manual testing).
 
 ### Integration tests (real Gemini, real anomaly model, real audit trigger)
 The 53-test mocked suite above verifies code logic, not whether Gemini, the
@@ -411,7 +466,9 @@ live running server with real HTTP calls, using a throwaway test user:
 - **`test_integration_ai.py`** — creates real events and checks Gemini
   summary/RAG endpoints return real, non-empty, data-grounded answers, and
   that anomaly detection is *selective* (not everything gets flagged, and a
-  deliberately planted suspicious event is correctly caught).
+  deliberately planted suspicious event is correctly caught). Since this
+  hits real Gemini through the real LangChain chains, it's also where
+  `ObservabilityCallback` actually fires and rows land in `llm_calls`.
 - **`test_integration_update_audit.py`** — verifies the change-aware update
   behavior end to end: a no-op `PUT` (same `event_type`/`payload`) leaves
   `anomaly_score` and `updated_at` completely unchanged (no Gemini call, no
@@ -521,6 +578,27 @@ are acceptable at current single-worker, portfolio scale — and a parallel
 identical function interface, so upgrading is a one-line import swap in
 `ai_service.py` when the project outgrows the in-memory approach.
 
+### 9. LLM Observability — `latency_ms` Inaccurate Until Upstream Patch Is Pushed
+`ObservabilityCallback` (services/observability.py) passes a precisely-measured
+`latency_ms_override` into `llm_observability.track_llm_call()` — a small
+addition to `track_llm_call()`'s signature that currently exists only in this
+author's local fork, not yet pushed to `sgr111/llm-observability` on GitHub.
+Until it is, every LangChain-sourced call still logs successfully (project,
+feature, prompt version, and success/failure are all accurate — confirmed via
+direct `psql` inspection of the `llm_calls` table), but `latency_ms` reads `0`
+instead of the real duration, because `track_llm_call()` falls back to timing
+an already-resolved no-op function. `ObservabilityCallback` detects the
+missing parameter (`TypeError`) and degrades gracefully rather than dropping
+the log entry or crashing the request.
+
+### 10. LLM Observability — `model` Column Sometimes Empty
+`ObservabilityCallback` reads the model name from LangChain's
+`response.llm_output.get("model_name")`, but `ChatGoogleGenerativeAI` doesn't
+always populate that field on its response object. When it's missing, the
+`model` column in `llm_calls` is logged as empty rather than e.g.
+`"gemini-2.5-flash"`. Doesn't affect `success`/`latency_ms`/`project`/`feature`
+tracking — cosmetic gap in one column, not yet fixed.
+
 </details>
 
 ---
@@ -535,13 +613,15 @@ PostgreSQL 18     — Primary database
 JSONB + GIN       — Flexible event storage + fast queries
 pgvector          — Vector similarity search (exact cosine, 3072 dims)
 CDC Triggers      — Automatic audit trail, no-op-aware
-Alembic           — Schema version control (6 migrations)
+Alembic           — Schema version control (7 migrations)
 SQLAlchemy ORM    — CRUD + auth routes
 asyncpg           — AI routes (pgvector operators)
+SQLAlchemy (async)— Dedicated engine for LLM call logging (database_logging.py)
 JWT + bcrypt      — Authentication
 SlowAPI           — Per-user rate limiting
 httpx             — Async payload enrichment
 LangChain         — chain/retriever framework wrapping all 3 Gemini calls (custom ExactScanPgVectorRetriever for RAG)
+llm-observability — Shared package (sgr111/llm-observability): versioned prompts, per-call logging to llm_calls
 Gemini Flash      — NL search, summarisation, RAG generation (via langchain-google-genai)
 Gemini Embeddings — 3072-dim event vectors (via langchain-google-genai)
 scikit-learn      — IsolationForest anomaly detection
@@ -559,15 +639,16 @@ pytest            — 56-test suite (53 mocked: auth/CRUD/AI/security + 3 ANN-re
 
 ```bash
 uvicorn main:app --reload                   # Start server
-alembic upgrade head                        # Apply all migrations
+alembic upgrade head                        # Apply all migrations (incl. llm_calls table)
 alembic downgrade -1                        # Rollback one migration
 alembic history --verbose                   # See migration history
 pytest                                      # Run full test suite (56 tests)
 pytest -v                                   # Verbose test output
-pytest test_integration_ai.py -v            # Real-API: Gemini + anomaly (server must be running)
+pytest test_integration_ai.py -v            # Real-API: Gemini + anomaly + LLM observability (server must be running)
 pytest test_integration_update_audit.py -v  # Real-API: update no-op + audit trigger (server must be running)
 pytest test_integration_cache.py -v         # Real-API: cache hit speed + auto-invalidation (server must be running)
 pytest --cov=. --cov-report=html            # Test coverage report
+psql -U postgres -d activity_tracker -c "SELECT project, feature, model, latency_ms, success, created_at FROM llm_calls ORDER BY created_at DESC LIMIT 10;"  # Inspect recent LLM calls
 ```
 
 ---

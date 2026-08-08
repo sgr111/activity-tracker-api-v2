@@ -7,6 +7,7 @@ from slowapi.errors import RateLimitExceeded
 import httpx
 
 from database_async import create_pool, close_pool
+from database_logging import create_logging_engine, close_logging_engine
 from routers import events, audit, auth
 
 
@@ -14,16 +15,18 @@ from routers import events, audit, auth
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/day"])
 
 
-# ── Lifespan: httpx client + asyncpg pool ─────────────────
+# ── Lifespan: httpx client + asyncpg pool + logging engine ─
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     app.state.http = httpx.AsyncClient(timeout=10.0)
     await create_pool()
+    await create_logging_engine()
     yield
     # Shutdown
     await app.state.http.aclose()
     await close_pool()
+    await close_logging_engine()
 
 
 # ── App factory ────────────────────────────────────────────

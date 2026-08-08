@@ -7,6 +7,7 @@ import json
 
 from database import get_db
 from database_async import get_async_conn
+from database_logging import get_logging_session
 from models import Event, User
 from schemas import (
     EventCreate, EventUpdate, EventResponse,
@@ -187,11 +188,12 @@ async def nl_search(
     request:      Request,
     body:         NLSearchRequest,
     db:           Session = Depends(get_db),
-    current_user: User    = Depends(get_current_user)
+    current_user: User    = Depends(get_current_user),
+    log_session          = Depends(get_logging_session)
 ):
     """Natural language search — Gemini converts question to SQL."""
     try:
-        sql = await natural_language_to_sql(body.question)
+        sql = await natural_language_to_sql(body.question, db_session=log_session)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -221,7 +223,8 @@ async def summarise(
     request:      Request,
     body:         SummaryRequest,
     db:           Session = Depends(get_db),
-    current_user: User    = Depends(get_current_user)
+    current_user: User    = Depends(get_current_user),
+    log_session          = Depends(get_logging_session)
 ):
     """AI-powered summary of your recent events using Gemini."""
     query = db.query(Event).filter(Event.owner_id == current_user.id)
@@ -241,7 +244,7 @@ async def summarise(
     ]
 
     try:
-        summary = await summarise_events(events_data)
+        summary = await summarise_events(events_data, db_session=log_session)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gemini error: {str(e)}")
 
@@ -378,7 +381,8 @@ async def rag_ask(
     request:      Request,
     body:         RAGRequest,
     conn          = Depends(get_async_conn),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    log_session         = Depends(get_logging_session)
 ):
     """
     RAG Pipeline — Retrieval Augmented Generation.
@@ -394,7 +398,8 @@ async def rag_ask(
             question   = body.question,
             user_id    = current_user.id,
             async_conn = conn,
-            top_k      = body.top_k
+            top_k      = body.top_k,
+            db_session = log_session
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"RAG error: {str(e)}")
