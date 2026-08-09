@@ -21,7 +21,6 @@ Run manually, with the server already running (uvicorn main:app --reload):
     pytest test_integration_observability.py -v
 """
 
-import os
 import time
 from datetime import datetime, timezone
 
@@ -29,14 +28,19 @@ import httpx
 import psycopg2
 import pytest
 
+from config import settings
+
 BASE_URL = "http://127.0.0.1:8000"
 TIMEOUT  = 30.0
 
-# Points at whatever DB the running server is actually using (DATABASE_URL
-# in .env) — same DB the manual psql check queried during Step 2 wiring.
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql://postgres:password@localhost:5432/activity_tracker"
-)
+# Reads the same settings.DATABASE_URL every other file in this project
+# uses (config.py, via pydantic-settings) — NOT os.getenv() directly. A
+# plain os.getenv() here would miss values that only exist in .env, since
+# python-dotenv/pydantic-settings load .env into the app's own process,
+# not into the OS environment a standalone script sees. No hardcoded
+# fallback either — a source file is not the place for a credential-shaped
+# connection string, even a local-dev placeholder one.
+DATABASE_URL = settings.DATABASE_URL
 
 # Gives ObservabilityCallback's async DB write a moment to land before we
 # query for it — the HTTP response returns as soon as the chain finishes,
@@ -128,6 +132,14 @@ def test_nl_search_logs_to_llm_calls(auth_headers, db_conn):
     project, feature, model, latency_ms, success, error_message, created_at = row
     assert project == "activity-tracker", f"Unexpected project tag: {project!r}"
     assert success is True, f"Logged call marked as failed: {error_message}"
+    assert latency_ms > 0, (
+        f"latency_ms is {latency_ms} (expected > 0) — ObservabilityCallback's "
+        f"latency_ms_override isn't reaching track_llm_call(), or the "
+        f"installed llm-observability version doesn't support it yet. "
+        f"Check that llm_observability.logger.track_llm_call() accepts "
+        f"latency_ms_override (pip show llm_observability / reinstall from "
+        f"the patched sgr111/llm-observability main branch)."
+    )
 
 
 def test_summary_logs_to_llm_calls(auth_headers, db_conn, seeded_events):
@@ -151,6 +163,7 @@ def test_summary_logs_to_llm_calls(auth_headers, db_conn, seeded_events):
     project, feature, model, latency_ms, success, error_message, created_at = row
     assert project == "activity-tracker", f"Unexpected project tag: {project!r}"
     assert success is True, f"Logged call marked as failed: {error_message}"
+    assert latency_ms > 0, f"latency_ms is {latency_ms} (expected > 0) — see nl_search test for what this implies."
 
 
 def test_rag_ask_logs_to_llm_calls(auth_headers, db_conn, seeded_events):
@@ -174,6 +187,7 @@ def test_rag_ask_logs_to_llm_calls(auth_headers, db_conn, seeded_events):
     project, feature, model, latency_ms, success, error_message, created_at = row
     assert project == "activity-tracker", f"Unexpected project tag: {project!r}"
     assert success is True, f"Logged call marked as failed: {error_message}"
+    assert latency_ms > 0, f"latency_ms is {latency_ms} (expected > 0) — see nl_search test for what this implies."
 
 
 def test_repeated_nl_search_question_does_not_double_log(auth_headers, db_conn):
