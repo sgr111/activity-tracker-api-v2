@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # ── Auth ──────────────────────────────────────────
-    SECRET_KEY:                   str            # required — no fallback, on purpose
+    SECRET_KEY:                   str          # required — no fallback, on purpose
     ALGORITHM:                    str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES:  int = 30
 
