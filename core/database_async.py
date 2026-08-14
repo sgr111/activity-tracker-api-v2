@@ -1,6 +1,6 @@
 import asyncpg
 
-from config import settings
+from core.config import settings
 
 DATABASE_URL = settings.DATABASE_URL
 

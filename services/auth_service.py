@@ -7,9 +7,9 @@ from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from database import get_db
+from core.database import get_db
 from models import User
-from config import settings
+from core.config import settings
 
 SECRET_KEY                  = settings.SECRET_KEY
 ALGORITHM                   = settings.ALGORITHM

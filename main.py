@@ -6,8 +6,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import httpx
 
-from database_async import create_pool, close_pool
-from database_logging import create_logging_engine, close_logging_engine
+from core.database_async import create_pool, close_pool
+from core.database_logging import create_logging_engine, close_logging_engine
 from routers import events, audit, auth
 
 

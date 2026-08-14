@@ -28,7 +28,7 @@ import httpx
 import psycopg2
 import pytest
 
-from config import settings
+from core.config import settings
 
 BASE_URL = "http://127.0.0.1:8000"
 TIMEOUT  = 30.0

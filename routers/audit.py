@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from database import get_db
+from core.database import get_db
 from models import EventAudit, User
 from schemas import AuditResponse
 from services.auth_service import get_current_user, get_user_id_for_limit

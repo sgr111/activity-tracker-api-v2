@@ -27,7 +27,7 @@ os.environ["ALGORITHM"]                   = "HS256"
 os.environ["GEMINI_API_KEY"]              = "fake-key-for-tests"
 os.environ["ACCESS_TOKEN_EXPIRE_MINUTES"] = "30"
 
-from database import Base, get_db
+from core.database import Base, get_db
 import models  # noqa
 from main import app
 
@@ -95,7 +95,7 @@ def client(mock_gemini_session, mock_httpx_session):
     mock_http = MagicMock()
     mock_http.aclose = AsyncMock()
 
-    with patch("database_async.pool", mock_pool), \
+    with patch("core.database_async.pool", mock_pool), \
          patch("main.httpx.AsyncClient", return_value=mock_http):
         with TestClient(app) as c:
             yield c

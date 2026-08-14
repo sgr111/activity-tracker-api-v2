@@ -11,7 +11,7 @@ wired into main.py's lifespan the same way.
 """
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-from config import settings
+from core.config import settings
 
 # settings.DATABASE_URL is a plain "postgresql://..." URL (used by the sync
 # engine in database.py and psycopg2). SQLAlchemy's async engine needs the

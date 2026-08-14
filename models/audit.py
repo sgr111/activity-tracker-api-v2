@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, func
 from sqlalchemy.dialects.postgresql import JSONB
-from database import Base
+from core.database import Base
 
 
 class EventAudit(Base):

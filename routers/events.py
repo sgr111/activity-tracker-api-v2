@@ -5,9 +5,9 @@ from slowapi import Limiter
 import httpx
 import json
 
-from database import get_db
-from database_async import get_async_conn
-from database_logging import get_logging_session
+from core.database import get_db
+from core.database_async import get_async_conn
+from core.database_logging import get_logging_session
 from models import Event, User
 from schemas import (
     EventCreate, EventUpdate, EventResponse,

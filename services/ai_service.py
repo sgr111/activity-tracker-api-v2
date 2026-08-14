@@ -43,7 +43,7 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from llm_observability.prompts.registry import PromptRegistry
 
-from config import settings
+from core.config import settings
 from local_cache import cache_get, cache_set, nl_search_key, summary_key
 try:
     from services.observability import ObservabilityCallback
