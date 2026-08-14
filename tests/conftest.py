@@ -3,9 +3,23 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from unittest.mock import patch, MagicMock, AsyncMock
+from dotenv import load_dotenv
 import os
 
-TEST_DATABASE_URL = "postgresql://postgres:password@localhost:5432/activity_tracker_test"
+# Loads .env before reading TEST_DATABASE_URL below — same file the app
+# itself uses for DATABASE_URL/GEMINI_API_KEY/etc, so setting
+# TEST_DATABASE_URL once in .env is enough; no export-every-session needed.
+load_dotenv()
+
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+if not TEST_DATABASE_URL:
+    raise RuntimeError(
+        "TEST_DATABASE_URL is not set. Add it to .env, e.g.:\n"
+        "  TEST_DATABASE_URL=postgresql://postgres:yourpassword@localhost:5432/activity_tracker_test\n"
+        "No hardcoded default here on purpose — a source file is not the "
+        "place for a credential-shaped connection string, even a "
+        "local-dev placeholder one."
+    )
 
 os.environ["DATABASE_URL"]                = TEST_DATABASE_URL
 os.environ["SECRET_KEY"]                  = "test-secret-key-for-pytest"
@@ -46,13 +60,6 @@ def setup_database():
 
 
 # ── Session-scoped mocks — active for entire test session ──
-#only for session-scoped fixtures and have autouse=True so they -
-# - don't need to be explicitly requested in tests.
-
-#ALSO stays active while making shared_event_id, delete_event_id, and 
-#audit_delete_event_id fixtures, so those fixtures can call -
-# - POST /events/ without actually hitting Gemini or httpx."""
-
 @pytest.fixture(scope="session", autouse=True)
 def mock_gemini_session():
     """Mock Gemini (via LangChain) at session scope so shared fixtures can
@@ -118,10 +125,6 @@ def auth_headers(auth_token):
 
 
 # ── Function-scoped mocks for individual test overrides ────
-"""can override the session-scoped mock_gemini in a test by using this
- fixture and changing the return value of mock_llm or mock_embed.
- in other words can override responses from the model for a specific 
- test without affecting other tests."""
 @pytest.fixture(autouse=True)
 def mock_gemini():
     """Function-scoped — lets individual tests override what the model

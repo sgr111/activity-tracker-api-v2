@@ -22,11 +22,24 @@ normal `pytest` suite; the first two are marked @pytest.mark.integration
 like the rest of the project's DB-touching tests.
 """
 import asyncpg
+import os #is used to get TEST_DATABASE_URL_ASYNC from .env
 import pytest
 
 from services.ai_service import ExactScanPgVectorRetriever
 
-TEST_DATABASE_URL_ASYNC = "postgresql://postgres:password@localhost:5432/activity_tracker_test"
+# .env is already loaded by conftest.py (loaded first, before this module,
+# by pytest's collection order) — no separate load_dotenv() call needed
+# here. No hardcoded fallback on purpose (see conftest.py's comment).
+
+#TEST_DATABASE_URL_ASYNC = "postgresql://postgres:password@localhost:5432/activity_tracker_test"
+# is replaced by TEST_DATABASE_URL_ASYNC in .env, which is loaded by conftest.py
+
+TEST_DATABASE_URL_ASYNC = os.getenv("TEST_DATABASE_URL_ASYNC")
+if not TEST_DATABASE_URL_ASYNC:
+    raise RuntimeError(
+        "TEST_DATABASE_URL_ASYNC is not set. Add it to .env, e.g.:\n"
+        "  TEST_DATABASE_URL_ASYNC=postgresql://postgres:yourpassword@localhost:5432/activity_tracker_test"
+    )
 
 
 @pytest.fixture
