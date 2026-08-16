@@ -41,6 +41,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.retrievers import BaseRetriever
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_openai import ChatOpenAI
 from llm_observability.prompts.registry import PromptRegistry
 
 from core.config import settings
@@ -55,10 +56,27 @@ EMBEDDING_MODEL = "models/gemini-embedding-001"
 EMBEDDING_DIM   = 3072
 PROJECT_NAME    = "activity-tracker"
 
-llm = ChatGoogleGenerativeAI(
+gemini_llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=settings.GEMINI_API_KEY,
 )
+
+# Groq is optional — if GROQ_API_KEY isn't set, `llm` below just falls back
+# to being gemini_llm directly (no fallback chain, no behavior change).
+groq_llm = None
+if settings.GROQ_API_KEY:
+    groq_llm = ChatOpenAI(
+        model=settings.GROQ_MODEL,
+        api_key=settings.GROQ_API_KEY,
+        base_url="https://api.groq.com/openai/v1",
+        timeout=10,
+        max_retries=0,  # don't let langchain retry Groq internally — fail fast, let Gemini take over
+    )
+
+# `llm` is what all three chains below (nl_to_sql_chain, summary_chain,
+# rag_chain) already reference — so wiring the fallback here is enough to
+# cover all three without touching the chains themselves.
+llm = groq_llm.with_fallbacks([gemini_llm]) if groq_llm else gemini_llm
 
 embeddings = GoogleGenerativeAIEmbeddings(
     model=EMBEDDING_MODEL,

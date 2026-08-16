@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     # ── Gemini ────────────────────────────────────────
     GEMINI_API_KEY:                str
 
+    # ── Groq (optional — primary/fast path, falls back to Gemini if unset
+    # or if calls fail/rate-limit) ──────────────────────
+    GROQ_API_KEY:                  str | None = None
+    GROQ_MODEL:                    str = "llama-3.3-70b-versatile"
+
     # ── Database (used by both database.py and database_async.py) ──
     #DATABASE_URL:str = "postgresql://postgres:password@localhost:5432/activity_tracker"
     DATABASE_URL:                  str    

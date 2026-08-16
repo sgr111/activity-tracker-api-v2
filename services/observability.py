@@ -49,6 +49,45 @@ from llm_observability import track_llm_call
 logger = logging.getLogger("activity_tracker.observability")
 
 
+def _infer_provider(serialized: Optional[dict], model_name: Optional[str] = None) -> str:
+    """
+    Best-effort provider label from LangChain's `serialized` model info.
+
+    Groq is called through ChatOpenAI (its OpenAI-compatible endpoint), so
+    the class name alone ("ChatOpenAI") can't tell Groq apart from real
+    OpenAI. The reliable signal is the base URL LangChain actually
+    serializes into kwargs — `openai_api_base` — which is where the Groq
+    endpoint (https://api.groq.com/...) shows up. Falls back to the class
+    name, then to a model-name guess, then "unknown" — never raises, since
+    this only feeds a logging label.
+    """
+    try:
+        kwargs = (serialized or {}).get("kwargs", {}) or {}
+        base_url = kwargs.get("openai_api_base") or kwargs.get("base_url") or ""
+        if base_url and "groq" in str(base_url).lower():
+            return "groq"
+
+        ident = (serialized or {}).get("id")
+        class_name = ident[-1] if isinstance(ident, list) and ident else (serialized or {}).get("name")
+        if class_name:
+            cn = class_name.lower()
+            if "google" in cn or "gemini" in cn:
+                return "gemini"
+            if "openai" in cn:
+                return "openai"  # ChatOpenAI with no groq base_url — real OpenAI
+    except Exception:
+        pass  # best-effort only — never let provider detection break logging
+
+    if model_name:
+        m = model_name.lower()
+        if "gemini" in m:
+            return "gemini"
+        if any(tag in m for tag in ("llama", "gpt-oss", "mixtral", "gemma")):
+            return "groq"
+
+    return "unknown"
+
+
 class ObservabilityCallback(AsyncCallbackHandler):
     def __init__(
         self,
@@ -66,10 +105,12 @@ class ObservabilityCallback(AsyncCallbackHandler):
         self.db_session = db_session
         self._start_times: Dict[UUID, float] = {}
         self._prompt_text: Dict[UUID, str] = {}
+        self._provider: Dict[UUID, str] = {}
 
     # ── start hooks: record accurate timing + prompt text ──
     async def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs) -> None:
         self._start_times[run_id] = time.monotonic()
+        self._provider[run_id] = _infer_provider(serialized)
         try:
             flat = [m.content for turn in messages for m in turn]
             self._prompt_text[run_id] = "\n".join(str(c) for c in flat)[:4000]
@@ -78,6 +119,7 @@ class ObservabilityCallback(AsyncCallbackHandler):
 
     async def on_llm_start(self, serialized, prompts, *, run_id, **kwargs) -> None:
         self._start_times.setdefault(run_id, time.monotonic())
+        self._provider.setdefault(run_id, _infer_provider(serialized))
         if prompts:
             self._prompt_text.setdefault(run_id, str(prompts[0])[:4000])
 
@@ -86,6 +128,7 @@ class ObservabilityCallback(AsyncCallbackHandler):
         start = self._start_times.pop(run_id, None)
         elapsed_ms = int((time.monotonic() - start) * 1000) if start is not None else None
         prompt_text = self._prompt_text.pop(run_id, None)
+        provider = self._provider.pop(run_id, None)
 
         text = ""
         if response.generations and response.generations[0]:
@@ -108,6 +151,7 @@ class ObservabilityCallback(AsyncCallbackHandler):
             _already_resolved,
             prompt_text=prompt_text,
             model=model_name,
+            provider=provider or _infer_provider(None, model_name),
             latency_ms=elapsed_ms,
         )
 
@@ -115,12 +159,18 @@ class ObservabilityCallback(AsyncCallbackHandler):
         start = self._start_times.pop(run_id, None)
         elapsed_ms = int((time.monotonic() - start) * 1000) if start is not None else None
         prompt_text = self._prompt_text.pop(run_id, None)
+        provider = self._provider.pop(run_id, None)
 
         async def _reraise(prompt: Optional[str] = None):
             raise error
 
         try:
-            await self._log(_reraise, prompt_text=prompt_text, latency_ms=elapsed_ms)
+            await self._log(
+                _reraise,
+                prompt_text=prompt_text,
+                provider=provider or "unknown",
+                latency_ms=elapsed_ms,
+            )
         except Exception:
             # track_llm_call re-raises fn's own exception after logging it —
             # expected here since fn=_reraise. The real error already
@@ -135,13 +185,14 @@ class ObservabilityCallback(AsyncCallbackHandler):
         *,
         prompt_text: Optional[str] = None,
         model: Optional[str] = None,
+        provider: str = "unknown",
         latency_ms: Optional[int] = None,
     ) -> None:
         call_kwargs: Dict[str, Any] = {}
         common = dict(
             project=self.project,
             feature=self.feature,
-            provider="gemini",
+            provider=provider,
             model=model,
             prompt_name=self.prompt_name,
             prompt_version=self.prompt_version,
