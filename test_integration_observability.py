@@ -113,9 +113,19 @@ def _latest_llm_call(db_conn, feature: str, since: datetime):
 def test_nl_search_logs_to_llm_calls(auth_headers, db_conn):
     before = datetime.now(timezone.utc)
 
+    # Unique per run — test_integration_cache.py's own nl_search test uses
+    # the plain "show me all login events" question, and this project's
+    # NL-to-SQL cache is in-process (survives across test files/runs until
+    # the server restarts or the 1hr TTL expires). Reusing that exact
+    # string here would hit the OTHER file's cached entry, skip the real
+    # Gemini call entirely, and this test would see zero llm_calls rows —
+    # not because observability is broken, but because no LLM call
+    # happened for this request at all.
+    question = f"show me all login events (obs test {int(time.time())})"
+
     resp = httpx.post(
         f"{BASE_URL}/events/ai/search",
-        json={"question": "show me all login events"},
+        json={"question": question},
         headers=auth_headers,
         timeout=TIMEOUT,
     )

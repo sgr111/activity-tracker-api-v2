@@ -6,7 +6,6 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from dotenv import load_dotenv
 
 import httpx as real_httpx
-from unittest.mock import MagicMock, AsyncMock, patch
 
 import os
 
@@ -56,6 +55,59 @@ def override_get_db():
         db.close()
 
 
+def _make_safe_httpx_module_mock() -> MagicMock:
+    """
+    Builds a mock standing in for the `httpx` module, safe to bind onto a
+    module's own `httpx` name (e.g. `patch("services.enrichment.httpx",
+    this)`) without corrupting anything else that references the REAL,
+    globally-shared httpx module.
+
+    Two problems this avoids, both hit while wiring the Groq/Gemini
+    fallback (real ChatOpenAI/httpx.AsyncClient usage in
+    TestGroqGeminiFallback):
+
+    1. Patching just `httpx.AsyncClient` (e.g.
+       `patch("services.enrichment.httpx.AsyncClient")`) mutates the
+       ATTRIBUTE on the real, shared `httpx` module — since
+       `services.enrichment.httpx` and every other module's `import httpx`
+       are the same object in `sys.modules`. That breaks `isinstance(x,
+       httpx.AsyncClient)` checks done elsewhere (e.g. inside the `openai`
+       SDK when a real ChatOpenAI is constructed) with a confusing
+       `TypeError`.
+    2. Patching the whole `httpx` NAME with a bare `MagicMock()` avoids
+       problem 1, but loses every other real httpx symbol the patched
+       module might need — e.g. `except httpx.TimeoutException:` inside
+       enrichment.py fails because `TimeoutException` is now just an
+       auto-generated Mock attribute, not a real exception class.
+
+    Fix: copy every real public attribute from the actual httpx module
+    onto this mock first, then only the caller decides what to override
+    (typically just `.AsyncClient`) — real symbols like exception classes
+    stay real, only the network-touching parts get faked.
+    """
+    mock_httpx_module = MagicMock(wraps=real_httpx)
+    for name in dir(real_httpx):
+        if not name.startswith("_"):
+            setattr(mock_httpx_module, name, getattr(real_httpx, name))
+    return mock_httpx_module
+
+
+def _make_mock_async_client(get_response: MagicMock | None = None) -> AsyncMock:
+    """A fake httpx.AsyncClient instance — usable as `async with x() as c:`,
+    with .get()/.post() both returning `get_response` (default: a 200)."""
+    if get_response is None:
+        get_response = MagicMock()
+        get_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value           = get_response
+    mock_client.post.return_value          = get_response
+    mock_client.__aenter__.return_value    = mock_client
+    mock_client.__aexit__.return_value     = False
+    mock_client.aclose                     = AsyncMock()
+    return mock_client
+
+
 @pytest.fixture(scope="session", autouse=True)
 def setup_database():
     Base.metadata.create_all(bind=engine)
@@ -77,32 +129,11 @@ def mock_gemini_session():
         yield mock_llm, mock_embed
 
 
-#@pytest.fixture(scope="session", autouse=True)
-#def mock_httpx_session():
-#    """Mock httpx at session scope so shared fixtures can call POST /events/."""
-#    with patch("services.enrichment.httpx") as mock_httpx_module:
-#        mock_response             = MagicMock()
-#        mock_response.status_code = 200
- #       mock_httpx_module.AsyncClient.return_value.__aenter__.return_value.get.return_value = mock_response
-#        yield mock_httpx_module
-
 @pytest.fixture(scope="session", autouse=True)
 def mock_httpx_session():
-    mock_httpx_module = MagicMock(wraps=real_httpx)
-    for name in dir(real_httpx):
-        if not name.startswith("_"):
-            setattr(mock_httpx_module, name, getattr(real_httpx, name))
-
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-
-    mock_client = AsyncMock()
-    mock_client.get.return_value = mock_response
-    mock_client.post.return_value = mock_response
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = False
-
-    mock_httpx_module.AsyncClient = MagicMock(return_value=mock_client)
+    """Mock httpx at session scope so shared fixtures can call POST /events/."""
+    mock_httpx_module = _make_safe_httpx_module_mock()
+    mock_httpx_module.AsyncClient = MagicMock(return_value=_make_mock_async_client())
 
     with patch("services.enrichment.httpx", mock_httpx_module):
         yield mock_httpx_module
@@ -114,19 +145,10 @@ def client(mock_gemini_session, mock_httpx_session):
     mock_pool = MagicMock()
     mock_conn = MagicMock()
     mock_pool.acquire.return_value.__aenter__ = lambda s: mock_conn
-    mock_pool.acquire.return_value.__aexit__ = MagicMock(return_value=False)
+    mock_pool.acquire.return_value.__aexit__  = MagicMock(return_value=False)
 
-    mock_httpx_module = MagicMock(wraps=real_httpx)
-    for name in dir(real_httpx):
-        if not name.startswith("_"):
-            setattr(mock_httpx_module, name, getattr(real_httpx, name))
-
-    mock_http = AsyncMock()
-    mock_http.aclose = AsyncMock()
-    mock_http.__aenter__.return_value = mock_http
-    mock_http.__aexit__.return_value = False
-
-    mock_httpx_module.AsyncClient = MagicMock(return_value=mock_http)
+    mock_httpx_module = _make_safe_httpx_module_mock()
+    mock_httpx_module.AsyncClient = MagicMock(return_value=_make_mock_async_client())
 
     with patch("core.database_async.pool", mock_pool), \
          patch("main.httpx", mock_httpx_module):
@@ -173,31 +195,10 @@ def mock_gemini():
         yield mock_llm, mock_embed
 
 
-#@pytest.fixture(autouse=True)
-#def mock_httpx():
-    #with patch("services.enrichment.httpx") as mock_httpx_module:
-        #mock_response             = MagicMock()
-       # mock_response.status_code = 200
-        #mock_httpx_module.AsyncClient.return_value.__aenter__.return_value.get.return_value = mock_response
-       # yield mock_httpx_module
-
 @pytest.fixture(autouse=True)
 def mock_httpx():
-    mock_httpx_module = MagicMock(wraps=real_httpx)
-    for name in dir(real_httpx):
-        if not name.startswith("_"):
-            setattr(mock_httpx_module, name, getattr(real_httpx, name))
-
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-
-    mock_client = AsyncMock()
-    mock_client.get.return_value = mock_response
-    mock_client.post.return_value = mock_response
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = False
-
-    mock_httpx_module.AsyncClient = MagicMock(return_value=mock_client)
+    mock_httpx_module = _make_safe_httpx_module_mock()
+    mock_httpx_module.AsyncClient = MagicMock(return_value=_make_mock_async_client())
 
     with patch("services.enrichment.httpx", mock_httpx_module):
         yield mock_httpx_module

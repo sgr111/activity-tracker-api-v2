@@ -113,6 +113,12 @@ class TestAnomalyDetection:
 class TestGroqGeminiFallback:
     @pytest.fixture(autouse=True)
     def mock_httpx(self):
+        """Overrides the module-level autouse mock_httpx fixture from
+        conftest.py for just this class. These tests construct real
+        ChatOpenAI (and therefore real httpx.AsyncClient-touching)
+        objects — leaving the module-level mock active isn't needed here
+        since these tests never touch enrichment's httpx client, and an
+        empty yield keeps httpx completely untouched for this class."""
         yield
 
     @staticmethod
@@ -120,6 +126,27 @@ class TestGroqGeminiFallback:
         request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
         response = httpx.Response(429, request=request)
         return RateLimitError("rate limited", response=response, body=None)
+
+    @staticmethod
+    async def _close_groq_client(groq_llm):
+        """Best-effort cleanup of the real httpx client(s) a real ChatOpenAI
+        instance opens internally — avoids 'coroutine was never awaited'
+        RuntimeWarnings at session teardown. Each close call is independent
+        and allowed to fail silently: different langchain-openai/openai SDK
+        versions expose this differently (aclose() on the LLM wrapper vs.
+        .client / .async_client directly), so try each without letting one
+        failure block the others."""
+        for closer in (
+            lambda: groq_llm.aclose(),
+            lambda: groq_llm.client.close(),
+            lambda: groq_llm.async_client.aclose(),
+        ):
+            try:
+                result = closer()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:
+                pass
 
     @pytest.mark.asyncio
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -148,12 +175,7 @@ class TestGroqGeminiFallback:
                 assert mock_gemini.called
                 assert result.content == "answer from gemini"
         finally:
-            try: await groq_llm.aclose()
-            except: pass
-            try: groq_llm.client.close()
-            except: pass
-            try: await groq_llm.async_client.aclose()
-            except: pass
+            await self._close_groq_client(groq_llm)
 
     @pytest.mark.asyncio
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -181,12 +203,8 @@ class TestGroqGeminiFallback:
                 assert not mock_gemini.called
                 assert result.content == "answer from groq"
         finally:
-            try: await groq_llm.aclose()
-            except: pass
-            try: groq_llm.client.close()
-            except: pass
-            try: await groq_llm.async_client.aclose()
-            except: pass
+            await self._close_groq_client(groq_llm)
+
 
 class TestHealth:
     def test_health_check(self, client):
