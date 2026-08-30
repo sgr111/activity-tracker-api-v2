@@ -310,6 +310,19 @@ switching between the two is a single import-line change in `ai_service.py`
 when the project scales to multiple workers or needs cache persistence
 across restarts.
 
+**Implementation details:**
+- **TTL** — 3600 seconds (1 hour) by default, checked against
+  `time.monotonic()` rather than wall-clock time, so the cache is immune
+  to system clock changes (NTP sync, manual clock adjustment) incorrectly
+  expiring or extending an entry's life.
+- **Max entries** — capped at 256. Past that, the least-recently-used
+  entry is evicted first (`popitem(last=False)` on an `OrderedDict`, after
+  every access moves that entry to the end via `move_to_end()`) — bounded
+  memory even under many unique questions/summaries.
+- **Eviction is LRU, not just TTL** — an entry can be evicted early for
+  space even before its TTL expires, if it hasn't been accessed recently
+  and the cache is at capacity.
+
 ---
 
 ## All Endpoints
@@ -634,6 +647,16 @@ retrying Groq first. This favors low latency over squeezing more attempts
 out of the cheaper provider; if Groq has a brief blip, this project pays a
 Gemini call for it rather than a Groq retry. Acceptable trade-off given
 both providers have generous free tiers at this project's scale.
+
+### 12. Database Connections — No SSL Configured (Local Dev)
+`DATABASE_URL` doesn't set `sslmode`, so the PostgreSQL connection runs
+unencrypted — fine for `localhost` local development (traffic never
+leaves the machine) but not appropriate as-is for a networked/production
+deployment. Before deploying anywhere the DB isn't on the same host as
+the app, add `?sslmode=require` (or stricter, e.g. `verify-full` with a
+CA cert) to `DATABASE_URL`. Gemini/Groq API calls are unaffected — both
+go over HTTPS by default via their respective SDKs, no extra config
+needed there.
 
 </details>
 
