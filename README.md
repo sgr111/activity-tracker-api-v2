@@ -30,7 +30,7 @@
      JWT Auth ──┤  routers/auth.py                 │
                 │  routers/events.py  ─────────────┼── SQLAlchemy ORM (CRUD/auth)
                 │  routers/audit.py                │           │
-                └──────────────┬──────────────────-┘           │
+                └──────────────┬───────────────────┘           │
                                │                               ▼
                 ┌──────────────▼───────────────────┐    ┌─────────────┐
                 │      AI Services (LangChain)     │    │ PostgreSQL  │
@@ -52,10 +52,13 @@
                                │                        └─────────────┘
                 httpx ─────────┘ (payload enrichment)
 
-        core/config.py (pydantic-settings) ── single source of truth for SECRET_KEY / ALGORITHM /ACCESS_TOKEN_EXPIRE_MINUTES / GEMINI_API_KEY / GROQ_API_KEY / GROQ_MODEL / DATABASE_URL —
-        imported by every service above. All security-relevant fields (SECRET_KEY, GEMINI_API_KEY, DATABASE_URL) are required, no insecure hardcoded fallback.
+        core/config.py (pydantic-settings) ── single source of truth for
+        SECRET_KEY / ALGORITHM /ACCESS_TOKEN_EXPIRE_MINUTES / GEMINI_API_KEY / GROQ_API_KEY / 
+        GROQ_MODEL / DATABASE_URL — imported by every service above. All security-relevant 
+        fields (SECRET_KEY, GEMINI_API_KEY, DATABASE_URL) are required, no insecure hardcoded fallback.
 
-        services/prompts.yaml ── versioned prompt templates, loaded via llm_observability.prompts.registry.PromptRegistry
+        services/prompts.yaml ── versioned prompt templates, loaded via 
+        llm_observability.prompts.registry.PromptRegistry
 ```
 
 ---
