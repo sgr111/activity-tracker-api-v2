@@ -24,7 +24,7 @@
 ## Architecture
 
 ```
-                ┌─────────────────────────────────┐
+                ┌──────────────────────────────────┐
                 │         FastAPI Application      │
                 │                                  │
      JWT Auth ──┤  routers/auth.py                 │
