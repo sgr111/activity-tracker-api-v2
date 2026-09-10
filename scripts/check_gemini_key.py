@@ -65,4 +65,4 @@ if __name__ == "__main__":
     elif gen_ok or embed_ok:
         print("Key partially working — one model type failed. See errors above.")
     else:
-        print("Key is NOT working — check quota, billing, or key validity in Google AI Studio.")
+        print("Gemini API Key is NOT working — check quota, billing, or key validity in Google AI Studio.")
