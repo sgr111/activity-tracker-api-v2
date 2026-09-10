@@ -31,7 +31,7 @@ def check_generate():
             "Reply with just the word: pong",
             generation_config={"max_output_tokens": 5}
         )
-        print(f"✅ generate_content OK — response: {response.text.strip()!r}")
+        print(f" generate_content OK — response: {response.text.strip()!r}")
         return True
     except Exception as e:
         print(f"❌ generate_content FAILED: {e}")
@@ -47,10 +47,10 @@ def check_embedding():
             task_type="retrieval_document"
         )
         dim = len(result["embedding"])
-        print(f"✅ embed_content OK — embedding dim: {dim}")
+        print(f" embed_content OK — embedding dim: {dim}")
         return True
     except Exception as e:
-        print(f"❌ embed_content FAILED: {e}")
+        print(f" embed_content FAILED: {e}")
         return False
 
 
