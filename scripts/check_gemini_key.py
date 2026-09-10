@@ -17,7 +17,7 @@ load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 if not API_KEY:
-    print("❌ No GEMINI_API_KEY found in .env")
+    print(" No GEMINI_API_KEY found in .env")
     sys.exit(1)
 
 genai.configure(api_key=API_KEY)
@@ -34,7 +34,7 @@ def check_generate():
         print(f" generate_content OK — response: {response.text.strip()!r}")
         return True
     except Exception as e:
-        print(f"❌ generate_content FAILED: {e}")
+        print(f" generate_content FAILED: {e}")
         return False
 
 
