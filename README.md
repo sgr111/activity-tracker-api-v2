@@ -500,7 +500,7 @@ pytest --cov=. --cov-report=html
 | `test_ann_regression.py` | 3 | No ANN index on `events.embedding`; retriever's query plan is a sequential scan; retriever class isn't LangChain's default PGVector retriever |
 
 <details>
-<summary><strong>What is mocked, integration tests, and CDC trigger coverage</strong></summary>
+<summary><strong style="font-size:1.5em">What is mocked, integration tests, and CDC trigger coverage</strong></summary>
 
 ### What is mocked in tests
 - **Gemini API** — `ChatGoogleGenerativeAI.ainvoke()` and `GoogleGenerativeAIEmbeddings.aembed_query()` are mocked at the class level with session-scoped fixtures, so every LangChain chain (regardless of when it was built) is mocked and tests never hit the real API
@@ -558,7 +558,7 @@ alembic -x db=test upgrade head
 ---
 
 <details>
-<summary><strong>Known Limitations</strong></summary>
+<summary><strong style="font-size:1.5em">Known Limitations</strong></summary>
 
 
 ### 1. pgvector Index — 2000 Dimension Limit
@@ -661,7 +661,7 @@ needed there.
 ---
 
 <details>
-<summary><strong>Tech Stack</strong></summary>
+<summary><strong style="font-size:1.5em">Tech Stack</strong></summary>
 
 
 ```
