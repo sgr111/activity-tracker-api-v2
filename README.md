@@ -500,7 +500,7 @@ pytest --cov=. --cov-report=html
 | `test_ann_regression.py` | 3 | No ANN index on `events.embedding`; retriever's query plan is a sequential scan; retriever class isn't LangChain's default PGVector retriever |
 
 <details>
-<summary><b>What is mocked, integration tests, and CDC trigger coverage</b></summary>
+<summary><h2>What is mocked, integration tests, and CDC trigger coverage</h2></summary>
 
 ### What is mocked in tests
 - **Gemini API** — `ChatGoogleGenerativeAI.ainvoke()` and `GoogleGenerativeAIEmbeddings.aembed_query()` are mocked at the class level with session-scoped fixtures, so every LangChain chain (regardless of when it was built) is mocked and tests never hit the real API
