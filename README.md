@@ -558,7 +558,7 @@ alembic -x db=test upgrade head
 ---
 
 <details>
-<summary><strong style="font-size:1.5em">Known Limitations</strong></summary>
+<summary><strong style="font-size:1.3em">Known Limitations</strong></summary>
 
 
 ### 1. pgvector Index — 2000 Dimension Limit
@@ -661,7 +661,7 @@ needed there.
 ---
 
 <details>
-<summary><strong style="font-size:1.5em">Tech Stack</strong></summary>
+<summary><strong style="font-size:1.17em">Tech Stack</strong></summary>
 
 
 ```
