@@ -1,8 +1,10 @@
 """
-Integration tests — automates what was previously only manually verified in
-Swagger: that update_event() skips re-embedding/re-scoring for a genuine
-no-op update, and that the CDC audit trigger correspondingly skips logging
+Integration tests — automated checks like update_event() skips re-embedding/re-scoring 
+for a genuine no-op update, and that the CDC audit trigger correspondingly skips logging
 that no-op (while still correctly logging a genuine change).
+
+Split into its own file to keep the AI tests focused on AI behavior (test_integration_ai.py) 
+and the update/audit tests focused on update/audit behavior.
 
 Hits the REAL running server, REAL database, and REAL audit trigger — not
 mocked. Companion to test_integration_ai.py, split into its own file since
