@@ -161,3 +161,7 @@ def test_audit_trail_skips_noop_but_logs_real_update(auth_headers, seeded_event)
         f"and the content_changed guard in update_event()."
     )
     assert len(entries) == 2, f"Expected exactly 2 audit entries total, got {len(entries)}: {operations}"
+
+# this test finally checks that the audit trigger is actually skipping- 
+# -the no-op update, and only logging the real update. If this fails,- 
+# -it means the trigger is still firing for no-op updates, which is not desired behavior.
