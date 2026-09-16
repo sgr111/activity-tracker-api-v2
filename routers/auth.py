@@ -15,7 +15,7 @@ router  = APIRouter(prefix="/auth", tags=["Auth"])
 limiter = Limiter(key_func=get_remote_address)
 
 
-# ── POST /auth/register ────────────────────────────────────
+# -- POST /auth/register ------------------------------------------
 @router.post("/register", response_model=UserResponse, status_code=201)
 @limiter.limit("5/minute")
 async def register(
@@ -41,7 +41,7 @@ async def register(
     return user
 
 
-# ── POST /auth/login ───────────────────────────────────────
+# --- POST /auth/login -----------------------
 @router.post("/login", response_model=Token)
 @limiter.limit("10/minute")
 async def login(
@@ -64,7 +64,7 @@ async def login(
     return Token(access_token=token, token_type="bearer")
 
 
-# ── GET /auth/me ───────────────────────────────────────────
+# --- GET /auth/me -----------------------------
 @router.get("/me", response_model=UserResponse)
 @limiter.limit("30/minute")
 async def me(
