@@ -12,7 +12,7 @@ router  = APIRouter(prefix="/audit", tags=["Audit / CDC"])
 limiter = Limiter(key_func=get_user_id_for_limit)
 
 
-# ── GET /audit ─────────────────────────────────────────────
+# --- GET /audit -------------------
 @router.get("/", response_model=list[AuditResponse])
 @limiter.limit("20/minute")
 async def list_audit(
@@ -29,7 +29,7 @@ async def list_audit(
     return query.order_by(EventAudit.changed_at.desc()).limit(limit).all()
 
 
-# ── GET /audit/event/{event_id} ────────────────────────────
+# --- GET /audit/event/{event_id} -----------------------
 @router.get("/event/{event_id}", response_model=list[AuditResponse])
 @limiter.limit("20/minute")
 async def audit_for_event(
