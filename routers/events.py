@@ -29,7 +29,7 @@ router  = APIRouter(prefix="/events", tags=["Events"])
 limiter = Limiter(key_func=get_user_id_for_limit)
 
 
-# ── POST /events ───────────────────────────────────────────
+# --- POST /events ------------------------------------------
 @router.post("/", response_model=EventResponse, status_code=201)
 @limiter.limit("10/minute")
 async def create_event(
@@ -63,7 +63,7 @@ async def create_event(
     return event
 
 
-# ── GET /events ────────────────────────────────────────────
+# --- GET /events -------------------------------
 @router.get("/", response_model=list[EventResponse])
 @limiter.limit("30/minute")
 async def list_events(
@@ -91,7 +91,7 @@ async def list_events(
     return query.order_by(Event.created_at.desc()).limit(limit).all()
 
 
-# ── GET /events/{id} ───────────────────────────────────────
+# --- GET /events/{id} -------------------------------
 @router.get("/{event_id}", response_model=EventResponse)
 @limiter.limit("30/minute")
 async def get_event(
@@ -109,7 +109,7 @@ async def get_event(
     return event
 
 
-# ── PUT /events/{id} ───────────────────────────────────────
+# -- PUT /events/{id} -------------------------------
 @router.put("/{event_id}", response_model=EventResponse)
 @limiter.limit("10/minute")
 async def update_event(
@@ -162,7 +162,7 @@ async def update_event(
     db.refresh(event)
     return event
 
-# ── DELETE /events/{id} ────────────────────────────────────
+# -- DELETE /events/{id} ----------------------
 @router.delete("/{event_id}", status_code=204)
 @limiter.limit("5/minute")
 async def delete_event(
@@ -181,7 +181,7 @@ async def delete_event(
     db.commit()
 
 
-# ── POST /events/ai/search ─────────────────────────────────
+# ---- POST /events/ai/search ------------------------------
 @router.post("/ai/search", response_model=NLSearchResponse)
 @limiter.limit("10/minute")
 async def nl_search(
