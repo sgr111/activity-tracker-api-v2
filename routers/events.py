@@ -216,7 +216,7 @@ async def nl_search(
     )
 
 
-# ── POST /events/ai/summary ────────────────────────────────
+# --- POST /events/ai/summary ----------------------------
 @router.post("/ai/summary", response_model=SummaryResponse)
 @limiter.limit("5/minute")
 async def summarise(
@@ -251,7 +251,7 @@ async def summarise(
     return SummaryResponse(summary=summary, events_used=len(events_data))
 
 
-# ── POST /events/ai/semantic ───────────────────────────────
+# --- POST /events/ai/semantic -------------------------------------
 @router.post("/ai/semantic", response_model=SemanticSearchResponse)
 @limiter.limit("10/minute")
 async def semantic_search(
@@ -301,7 +301,7 @@ async def semantic_search(
     )
 
 
-# ── POST /events/ai/anomaly/train ──────────────────────────
+# --- POST /events/ai/anomaly/train ------------------------------------
 @router.post("/ai/anomaly/train", response_model=AnomalyTrainResponse)
 @limiter.limit("5/minute")
 async def train_anomaly(
@@ -334,7 +334,7 @@ async def train_anomaly(
     )
 
 
-# ── GET /events/ai/anomaly/scan ────────────────────────────
+# --- GET /events/ai/anomaly/scan -------------------------------------
 @router.get("/ai/anomaly/scan", response_model=AnomalyScanResponse)
 @limiter.limit("5/minute")
 async def scan_anomalies(
@@ -374,7 +374,7 @@ async def scan_anomalies(
     )
 
 
-# ── POST /events/ai/ask ────────────────────────────────────
+# -- POST /events/ai/ask ------------------------------
 @router.post("/ai/ask", response_model=RAGResponse)
 @limiter.limit("5/minute")
 async def rag_ask(
