@@ -51,7 +51,7 @@ try:
 except ModuleNotFoundError:
     from observability import ObservabilityCallback
 
-# ── Models ─────────────────────────────────────────────────
+# --- Models ----------------------------------------
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 EMBEDDING_DIM   = 3072
 PROJECT_NAME    = "activity-tracker"
@@ -83,7 +83,7 @@ embeddings = GoogleGenerativeAIEmbeddings(
     google_api_key=settings.GEMINI_API_KEY,
 )
 
-# ── Prompt registry (versioned templates, see prompts.yaml) ──
+# --- Prompt registry (versioned templates, see prompts.yaml) ---
 _prompt_registry = PromptRegistry.from_yaml(str(Path(__file__).parent / "prompts.yaml"))
 
 _rag_prompt_entry       = _prompt_registry.get("rag_answer")
