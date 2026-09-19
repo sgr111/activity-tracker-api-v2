@@ -150,7 +150,7 @@ async def natural_language_to_sql(question: str, db_session=None) -> str:
     return sql
 
 
-# ── Event summarisation (LangChain chain) ──────────────────
+# --- Event summarisation (LangChain chain) ----------------------
 SUMMARY_PROMPT = ChatPromptTemplate.from_template(_summary_prompt_entry.template)
 summary_chain = SUMMARY_PROMPT | llm | StrOutputParser()
 
