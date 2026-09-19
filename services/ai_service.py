@@ -115,7 +115,7 @@ async def embed_text(text: str) -> list[float]:
     return await embeddings.aembed_query(text)
 
 
-# ── NL to SQL (LangChain chain) ────────────────────────────
+# --- NL to SQL (LangChain chain) -----------------------
 NL_TO_SQL_PROMPT = ChatPromptTemplate.from_template(_nl_to_sql_prompt_entry.template)
 nl_to_sql_chain = NL_TO_SQL_PROMPT | llm | StrOutputParser()
 
@@ -194,7 +194,7 @@ async def summarise_events(events: list[dict], db_session=None) -> str:
     return summary
 
 
-# ── Custom retriever: wraps the EXISTING exact-scan pgvector query ──
+# --- Custom retriever: wraps the EXISTING exact-scan pgvector query ---
 class ExactScanPgVectorRetriever(BaseRetriever):
     """
     Wraps the pre-existing exact/sequential-scan pgvector query as a
@@ -256,7 +256,7 @@ class ExactScanPgVectorRetriever(BaseRetriever):
         return docs
 
 
-# ── RAG Pipeline (LangChain chain over the custom retriever) ──
+#---- RAG Pipeline (LangChain chain over the custom retriever) ----
 RAG_PROMPT = ChatPromptTemplate.from_template(_rag_prompt_entry.template)
 
 
