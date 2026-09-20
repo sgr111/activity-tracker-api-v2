@@ -116,7 +116,7 @@ def score_event(event: dict) -> tuple[float, bool]:
     return round(score, 4), score < 0
 
 
-# ── Score all events ───────────────────────────────────────
+# --- Score all events --------------------------------
 def score_all_events(events: list[dict]) -> list[dict]:
     """
     Score a batch of events using the saved model.
