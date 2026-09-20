@@ -8,7 +8,7 @@ from typing import Any
 MODEL_PATH = "models/anomaly_model.pkl"
 
 
-# ── Feature extraction ─────────────────────────────────────
+# --- Feature extraction -----------------------------------
 def extract_features(events: list[dict]) -> pd.DataFrame:
     """
     Extract numeric features from event JSONB payloads for IsolationForest.
@@ -57,7 +57,7 @@ def extract_features(events: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# ── Train ──────────────────────────────────────────────────
+# --- Train ------------------------------
 def train_model(events: list[dict]) -> dict:
     """
     Train IsolationForest on existing events.
