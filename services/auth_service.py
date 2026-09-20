@@ -18,7 +18,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 bearer = HTTPBearer(auto_error=False)
 
 
-# ── Password helpers (bcrypt direct — avoids passlib Windows bug) ──
+# --- Password helpers (bcrypt direct — avoids passlib Windows bug) -----------
 def hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -27,7 +27,7 @@ def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
 
 
-# ── JWT helpers ────────────────────────────────────────────
+# --- JWT helpers -------------------------------------------------------
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     expire    = datetime.now(timezone.utc) + (
@@ -44,7 +44,7 @@ def decode_access_token(token: str) -> Optional[dict]:
         return None
 
 
-# ── FastAPI dependency: inject current user ────────────────
+# --- FastAPI dependency: inject current user -----------------
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer),
     db:          Session                      = Depends(get_db)
@@ -77,7 +77,7 @@ def get_current_user(
     return user
 
 
-# ── SlowAPI key func: per-user-email, falls back to IP ─────
+# --- SlowAPI key func: per-user-email, falls back to IP ------------
 def get_user_id_for_limit(request: Request) -> str:
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
