@@ -107,7 +107,7 @@ class ObservabilityCallback(AsyncCallbackHandler):
         self._prompt_text: Dict[UUID, str] = {}
         self._provider: Dict[UUID, str] = {}
 
-    # ── start hooks: record accurate timing + prompt text ──
+    # --- start hooks: record accurate timing + prompt text ---
     async def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs) -> None:
         self._start_times[run_id] = time.monotonic()
         self._provider[run_id] = _infer_provider(serialized)
@@ -123,7 +123,7 @@ class ObservabilityCallback(AsyncCallbackHandler):
         if prompts:
             self._prompt_text.setdefault(run_id, str(prompts[0])[:4000])
 
-    # ── end hooks: reuse track_llm_call's persistence path ──
+    # --- end hooks: reuse track_llm_call's persistence path ---
     async def on_llm_end(self, response: LLMResult, *, run_id, **kwargs) -> None:
         start = self._start_times.pop(run_id, None)
         elapsed_ms = int((time.monotonic() - start) * 1000) if start is not None else None
