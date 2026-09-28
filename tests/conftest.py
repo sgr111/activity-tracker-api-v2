@@ -179,7 +179,7 @@ def auth_headers(auth_token):
     return {"Authorization": f"Bearer {auth_token}"}
 
 
-# ── Function-scoped mocks for individual test overrides ────
+# -- Function-scoped mocks for individual test overrides ----------------
 @pytest.fixture(autouse=True)
 def mock_gemini():
     """Function-scoped — lets individual tests override what the model
@@ -211,7 +211,7 @@ def make_user_headers(client, email, password="pass123"):
     return {"Authorization": f"Bearer {login.json()['access_token']}"}
 
 
-# ── Shared event fixtures ──────────────────────────────────
+# -- Shared event fixtures -----------------------------
 @pytest.fixture(scope="session")
 def shared_event_id(client, auth_headers):
     """One event reused by Get/Update/Audit tests."""
