@@ -70,7 +70,7 @@ class SummaryResponse(BaseModel):
     events_used: int
 
 
-# ── Semantic Search ────────────────────────────────────────
+# -- Semantic Search -------------------------------------------
 class SemanticSearchRequest(BaseModel):
     query: str = Field(..., description="Natural language query to find similar events")
     limit: int = Field(default=5, ge=1, le=20)
