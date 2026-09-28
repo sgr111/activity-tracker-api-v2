@@ -101,7 +101,7 @@ class SemanticSearchResponse(BaseModel):
     result_count: int
 
 
-# ── Anomaly Detection ──────────────────────────────────────
+# -- Anomaly Detection ----------------------
 class AnomalyTrainResponse(BaseModel):
     message:           str
     events_trained_on: int
