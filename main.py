@@ -11,11 +11,11 @@ from core.database_logging import create_logging_engine, close_logging_engine
 from routers import events, audit, auth
 
 
-# ── Rate limiter ───────────────────────────────────────────
+# -- Rate limiter -----------------------------------------------
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/day"])
 
 
-# ── Lifespan: httpx client + asyncpg pool + logging engine ─
+# -- Lifespan: httpx client + asyncpg pool + logging engine --
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
