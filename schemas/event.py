@@ -121,7 +121,7 @@ class AnomalyScanResponse(BaseModel):
     results:         list[dict[str, Any]]
 
 
-# ── RAG Pipeline ──────────────────────────────────────────
+# -- RAG Pipeline -----------------------------------------------
 class RAGRequest(BaseModel):
     question: str = Field(..., description="Plain English question about your activity data")
     top_k:    int = Field(default=10, ge=1, le=20, description="Number of events to retrieve")
