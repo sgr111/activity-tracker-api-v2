@@ -115,7 +115,7 @@ def setup_database():
     Base.metadata.drop_all(bind=engine)
 
 
-# ── Session-scoped mocks — active for entire test session ──
+# -- Session-scoped mocks — active for entire test session --
 @pytest.fixture(scope="session", autouse=True)
 def mock_gemini_session():
     """Mock Gemini (via LangChain) at session scope so shared fixtures can
