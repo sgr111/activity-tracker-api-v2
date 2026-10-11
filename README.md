@@ -491,7 +491,7 @@ pytest --cov=. --cov-report=html
 ### Test suite breakdown — 58 tests
 
 | File | Tests | What It Covers |
-|------|-------|---------------|
+|------|-------|----------------|
 | `test_auth.py` | 12 | Register, login, JWT token, duplicate email, missing fields |
 | `test_events.py` | 18 | CRUD operations, JSONB filtering, payload merge, 404 handling |
 | `test_audit.py` | 7 | CDC audit trail endpoints, operation filtering, limit |
